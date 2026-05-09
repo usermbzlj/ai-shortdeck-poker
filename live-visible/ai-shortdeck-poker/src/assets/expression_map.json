@@ -1,0 +1,16 @@
+{
+  "mapping": [
+    {"id": 1, "charA": "1.png", "charA_alt": "1_2.png", "charB": "1_1.png", "charB_alt": "1_2.png"},
+    {"id": 2, "charA": "2.png", "charA_alt": "2_2.png", "charB": "2_1.png", "charB_alt": "2_2.png"},
+    {"id": 3, "charA": "3.png", "charA_alt": "3_2.png", "charB": "3_1.png", "charB_alt": "3_2.png"},
+    {"id": 4, "charA": "4.png", "charA_alt": "4_2.png", "charB": "4_1.png", "charB_alt": "4_2.png"},
+    {"id": 5, "charA": "5.png", "charA_alt": "5_2.png", "charB": "5_1.png", "charB_alt": "5_2.png"},
+    {"id": 6, "charA": "6.png", "charA_alt": "6_2.png", "charB": "6_1.png", "charB_alt": "6_2.png"},
+    {"id": 7, "charA": "7.png", "charA_alt": "7_2.png", "charB": "7_1.png", "charB_alt": "7_2.png"},
+    {"id": 8, "charA": "8.png", "charA_alt": "8_2.png", "charB": "8_1.png", "charB_alt": "8_2.png"},
+    {"id": 9, "charA": "9.png", "charA_alt": "9_2.png", "charB": "9_1.png", "charB_alt": "9_2.png"},
+    {"id": 10, "charA": "10.png", "charA_alt": "10_2.png", "charB": "10_1.png", "charB_alt": "10_2.png"},
+    {"id": 11, "charA": "11.png", "charA_alt": "11_2.png", "charB": "11_1.png", "charB_alt": "11_2.png"},
+    {"id": 12, "charA": "12.png", "charA_alt": "12_2.png", "charB": "12_1.png", "charB_alt": "12_2.png"}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "description": "德州扑克动漫角色表情映射表",
+  "mapping": [
+    { "id": 1,  "name": "冷静观察",         "keyword": "观察/铺垫",   "strength": 2, "charA": "1.png",    "charA_alt": "1_2.png",  "charB": "1_1.png",   "charB_alt": "1_2.png"  },
+    { "id": 2,  "name": "拿到好牌但装平静", "keyword": "强牌/隐藏",   "strength": 2, "charA": "2.png",    "charA_alt": "2_2.png",  "charB": "2_1.png",   "charB_alt": "2_2.png"  },
+    { "id": 3,  "name": "拿到烂牌但强撑镇定", "keyword": "烂牌/伪装", "strength": 2, "charA": "3.png",    "charA_alt": "3_2.png",  "charB": "3_1.png",   "charB_alt": "3_2.png"  },
+    { "id": 4,  "name": "诈唬时的假自信",   "keyword": "诈唬/施压",   "strength": 3, "charA": "4.png",    "charA_alt": "4_2.png",  "charB": "4_1.png",   "charB_alt": "4_2.png"  },
+    { "id": 5,  "name": "被对手加注",       "keyword": "反转/危机",   "strength": 3, "charA": "5.png",    "charA_alt": "5_2.png",  "charB": "5_1.png",   "charB_alt": "5_2.png"  },
+    { "id": 6,  "name": "陷入苦思",         "keyword": "决策/思考",   "strength": 3, "charA": "6.png",    "charA_alt": "6_2.png",  "charB": "6_1.png",   "charB_alt": "6_2.png"  },
+    { "id": 7,  "name": "自以为看穿对手",   "keyword": "推理/反击",   "strength": 3, "charA": "7.png",    "charA_alt": "7_2.png",  "charB": "7_1.png",   "charB_alt": "7_2.png"  },
+    { "id": 8,  "name": "赢牌后的得意",     "keyword": "胜利/收池",   "strength": 3, "charA": "8.png",    "charA_alt": "8_2.png",  "charB": "8_1.png",   "charB_alt": "8_2.png"  },
+    { "id": 9,  "name": "输光后的崩溃",     "keyword": "失败/失落",   "strength": 3, "charA": "9.png",    "charA_alt": "9_2.png",  "charB": "9_1.png",   "charB_alt": "9_2.png"  },
+    { "id": 10, "name": "All-in 时的决绝",  "keyword": "高潮/决战",   "strength": 4, "charA": "10.png",   "charA_alt": "10_2.png", "charB": "10_1.png",  "charB_alt": "10_2.png" },
+    { "id": 11, "name": "明明慌了但装高手", "keyword": "诈唬/反差",   "strength": 3, "charA": "11.png",   "charA_alt": "11_2.png", "charB": "11_1.png",  "charB_alt": "11_2.png" },
+    { "id": 12, "name": "真正的扑克脸",     "keyword": "高手/压迫",   "strength": 2, "charA": "12.png",   "charA_alt": "12_2.png", "charB": "12_1.png",  "charB_alt": "12_2.png" }
+  ]
+}

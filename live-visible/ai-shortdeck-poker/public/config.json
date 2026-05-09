@@ -1,0 +1,8 @@
+{
+  "cookie": "SESSDATA=063b653c%2C1793468329%2Cfa397%2A52CjBZL3ah2lXtoHiKMDZoLB2tpehHEcDIotUSguQksWayPrlTtPdXD-dXEU6AuIQ5AzISVko5UTdVYUNneFNSODU2aERMRGRHNmdSbndmMF9MZEdiNVpVWS1GOTRsXzJqT2lGcXRVbUpxMy1XREhCYkNhZnF1LWEyLUVIQl9SWElKcXBRRlU0cnVRIIEC",
+  "_comment": "静态部署时必须填写以下全部字段；vite preview/dev 会自动获取",
+  "token": "",
+  "buvid": "731C8CD3-C147-6FEE-434C-1177A9B5F1BD87646infoc",
+  "host": "bd-sz-live-comet-mixed-01.chat.bilibili.com",
+  "port": 2245
+}

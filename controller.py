@@ -158,10 +158,23 @@ class GameController(QtCore.QObject):
         # 等待选手心理活动 / 赛后感言完成
         self._pending_reactions: int = 0
 
+        # WebSocket 观察者（用于向前端牌桌广播）
+        self._observers: list[callable] = []
+
         self._emit_vm()
 
     def _display_name(self, pid: PlayerID) -> str:
         return self.profile[pid].name or pid
+
+    def add_observer(self, callback: callable) -> None:
+        self._observers.append(callback)
+
+    def _notify(self, event_type: str, payload: dict) -> None:
+        for cb in self._observers:
+            try:
+                cb(event_type, payload)
+            except Exception as e:
+                log.warning("Observer error for %s: %s", event_type, e)
 
     @staticmethod
     def _parse_temp(raw: str, fallback: str = "") -> float | None:
@@ -255,6 +268,13 @@ class GameController(QtCore.QObject):
         self.logAppended.emit("--- \U0001f195 新比赛开始 ---")
         self.logAppended.emit(f"Stack: ${core.dollars_from_cents(start_stack_cents)} | Blinds: ${core.dollars_from_cents(sb_cents)}/${core.dollars_from_cents(bb_cents)}")
         self.logAppended.emit(f"--- \U0001f0cf Hand #{self.state.hand_id} | Button: {self._display_name(self.state.button)} ---")
+        self._notify("match_started", {
+            "start_stack_cents": start_stack_cents,
+            "sb_cents": sb_cents,
+            "bb_cents": bb_cents,
+            "player_a": na,
+            "player_b": nb,
+        })
         self._emit_vm()
 
     def start_next_hand(self) -> None:
@@ -266,6 +286,10 @@ class GameController(QtCore.QObject):
         self._last_analysis = {"AI_A": "", "AI_B": ""}
         self.state.start_hand()
         self.logAppended.emit(f"--- \U0001f0cf Hand #{self.state.hand_id} | Button: {self._display_name(self.state.button)} ---")
+        self._notify("hand_started", {
+            "hand_id": self.state.hand_id,
+            "button": self.state.button,
+        })
         self._emit_vm()
 
     def lock_cards_from_texts(
@@ -303,8 +327,16 @@ class GameController(QtCore.QObject):
         p = self.state.next_to_act
         if not p:
             raise core.UserFacingError("当前无需行动")
+        pname = self._display_name(p)
         self.state.apply_action(p, action, to_cents)
         log.debug("execute_action 完成 | hand_over=%s | next_to_act=%s | pot=%d", self.state.hand_over, self.state.next_to_act, self.state.pot_cents)
+        self._notify("action_executed", {
+            "player": p,
+            "player_name": pname,
+            "action": action,
+            "to_cents": to_cents,
+            "manual": True,
+        })
         self._emit_vm()
 
     def advance_street(self) -> None:
@@ -315,6 +347,7 @@ class GameController(QtCore.QObject):
         street_name = self.state.street.upper()
         self.logAppended.emit(f"=== 进阶到 {street_name} ===")
         self._trigger_commentary(f"进入 {street_name}")
+        self._notify("street_advanced", {"street": self.state.street})
         self._emit_vm()
 
     def showdown(self) -> None:
@@ -337,6 +370,11 @@ class GameController(QtCore.QObject):
         self._hand_end_ts = _time.monotonic()
         self._trigger_commentary("本手结束 — 摊牌", is_hand_end=True)
         self._trigger_player_reactions()
+        self._notify("hand_ended", {
+            "winner": self.state.winner,
+            "win_reason": self.state.win_reason,
+            "winner_name": winner_name if self.state.winner else None,
+        })
         self._emit_vm()
 
     def set_auto_running(self, running: bool) -> None:
@@ -451,6 +489,7 @@ class GameController(QtCore.QObject):
         )
         log.debug("AI 请求 messages (%d条):\n%s", len(messages), json.dumps(messages, ensure_ascii=False, indent=2)[:10000])
         self.logAppended.emit(f"[{pname}] 正在思考... (request_id={req_id})")
+        self._notify("thinking_started", {"player": p, "player_name": pname, "req_id": req_id})
 
         def worker():
             start = _time.monotonic()
@@ -610,6 +649,7 @@ class GameController(QtCore.QObject):
         remaining = self.max_consecutive_failures - self._consecutive_failures
         self.logAppended.emit(f"[{pname}] 请求失败 (连续第 {self._consecutive_failures} 次，还剩 {max(remaining, 0)} 次机会)")
         self._raise_error(err)
+        self._notify("error", {"player": player, "player_name": pname, "error": err})
         if self._consecutive_failures >= self.max_consecutive_failures and self.auto_running:
             self.auto_running = False
             self._paused_reason = f"连续 {self._consecutive_failures} 次调用失败，已自动停止"
@@ -639,6 +679,15 @@ class GameController(QtCore.QObject):
             if decision.trash_talk:
                 self._last_trash_talk[pid] = decision.trash_talk
                 self.logAppended.emit(f"🗣️ [{pname} 喊话]: \"{decision.trash_talk}\"")
+
+            # 向前端广播 AI 思考结果
+            self._notify("thinking_result", {
+                "player": pid,
+                "player_name": pname,
+                "reasoning": reasoning,
+                "analysis": decision.analysis,
+                "trash_talk": decision.trash_talk,
+            })
 
             if decision.to_cents is not None:
                 legal = self.state.legal_actions(player)
@@ -675,6 +724,14 @@ class GameController(QtCore.QObject):
             if decision.to_cents is not None:
                 action_line += f" to ${core.dollars_from_cents(decision.to_cents)}"
             self.logAppended.emit(action_line)
+
+            # 向前端广播动作执行
+            self._notify("action_executed", {
+                "player": pid,
+                "player_name": pname,
+                "action": decision.action,
+                "to_cents": decision.to_cents,
+            })
 
             if self.state.hand_over and self.state.win_reason == "fold":
                 winner_name = self._display_name(self.state.winner) if self.state.winner else "?"
@@ -818,6 +875,7 @@ class GameController(QtCore.QObject):
                 content = (result.get("content") or "").strip()
                 if content:
                     self._reactionResult.emit(label, content)
+                    self._notify("player_reaction", {"player": pid, "label": label, "text": content})
                 else:
                     self._reactionResult.emit(label, "")
             except Exception as e:
@@ -935,6 +993,7 @@ class GameController(QtCore.QObject):
                 log.debug("解说员内容: %s", text[:2000])
                 if text:
                     self._commentResult.emit(text)
+                    self._notify("commentary", {"text": text, "event": event})
             except Exception as e:
                 log.error("解说员异常 | %.2fs | %s", _time.monotonic() - start, e)
                 self._commentError.emit(str(e))
@@ -1066,3 +1125,23 @@ class GameController(QtCore.QObject):
             },
         )
         self.viewModelChanged.emit(vm)
+        # 向前端牌桌广播完整状态
+        self._notify("state_sync", {
+            "hand_id": vm.hand_id,
+            "street": vm.street,
+            "button": vm.button,
+            "pot_cents": vm.pot_cents,
+            "stacks_cents": vm.stacks_cents,
+            "hole_cards": vm.hole_cards,
+            "board_cards": vm.board_cards,
+            "next_to_act": vm.next_to_act,
+            "hand_over": vm.hand_over,
+            "winner": vm.winner,
+            "win_reason": vm.reason,
+            "thinking": vm.thinking,
+            "last_error": vm.last_error,
+            "player_names": vm.player_names,
+            "contributed_street_cents": vm.contributed_street_cents,
+            "action_history": vm.history_lines,
+            "status_text": vm.status_text,
+        })

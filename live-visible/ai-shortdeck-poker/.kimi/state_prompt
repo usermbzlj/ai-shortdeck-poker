@@ -1,0 +1,237 @@
+# ai-shortdeck-poker 项目状态 — 供下一个 Agent 接手
+
+> 生成时间：2026-05-03
+> 当前阶段：右侧 2D 牌桌对局展示已完成核心功能（牌桌 + 角色立绘 + 表情系统 + 筹码系统）
+
+---
+
+## 一、项目概况
+
+这是一个 **AI 短牌德州扑克直播互动面板**，部署为 OBS 浏览器源使用。
+
+- **左侧 380px**：弹幕滚动 + 猜对排行榜（`danmuka.jsx` / `RankList.jsx`）
+- **右侧**：2D 跑道形牌桌对局展示（`App.jsx` / `App.css`）
+- **当前状态**：`main.jsx` 中 `<LeftPanel />` 被注释掉，全屏仅渲染右侧 `<App />`
+
+---
+
+## 二、技术栈
+
+- React 19 + Vite 8
+- 纯 CSS 绘制牌桌、筹码、扑克牌（无 Three.js，无额外图形库）
+- 构建：`node node_modules/vite/bin/vite.js build`（或 `npm run build`，注意 PowerShell 执行策略）
+- 开发：`npm run dev`
+
+---
+
+## 三、文件结构
+
+```
+src/
+  main.jsx              ← 应用入口。当前注释掉了 <LeftPanel />，只渲染 <App />
+  App.jsx               ← 右侧牌桌主组件（见下方详细说明）
+  App.css               ← 牌桌 + 角色 + 筹码样式
+  danmuka.jsx           ← 弹幕组件（当前未被引用）
+  RankList.jsx          ← 排行榜组件（当前未被引用）
+  assets/
+    charA/              ← 角色A立绘：1.png ~ 12.png, 1_2.png ~ 12_2.png（共24张）
+    charB/              ← 角色B立绘：1_1.png ~ 12_1.png, 1_2.png ~ 12_2.png（共24张）
+    charA_expressions.csv   ← 12种表情定义（场景/面部细节/肢体动作/Prompt）
+    expression_map.json     ← 表情编号到图片文件名的映射
+public/
+  favicon.svg, icons.svg
+dist/                   ← 构建输出
+current_tasks.md        ← 当前任务记录（如存在）
+```
+
+---
+
+## 四、App.jsx — 右侧牌桌对局组件（核心）
+
+### 状态
+- `phase`: 'idle' | 'dealing' | 'preflop' | 'flop' | 'turn' | 'river' | 'showdown' | 'end'
+- `turn`: null | 'A' | 'B' — 当前行动方
+- `pot`: number — 底池金额
+- `comm`: Card[] — 公共牌（最多5张）
+- `leftChips` / `rightChips`: number — 双方剩余筹码
+- `leftBet` / `rightBet`: number — 当前 street 双方下注额（用于筹码视觉）
+- `leftExpr` / `rightExpr`: number(1-12) — 表情编号
+- `msg`: string — 桌面中央消息文字
+
+### 游戏流程（runGame）
+```
+开始 → 洗牌 → 发底牌 → Ante（双方各$20）→ Preflop下注 → Flop(3张公共牌) → 下注
+→ Turn(1张) → 下注 → River(1张) → 下注 → Showdown（比大小）→ End（显示胜者）
+```
+
+### 下注逻辑（runStreet）
+- 每 street A 先行动，然后 B
+- `handStrength > 60` → 加注 $40
+- 否则 → 跟注（无金额变化，当前简化逻辑）
+- Ante: 双方各出 $20，pot 初始 = 40，left/rightChips 初始 = 1980
+
+### 牌型引擎（内联在 App.jsx 中）
+- `createDeck()` / `shuffle()` — 36张短牌（6-A），A可当5（A-6-7-8-9最小顺子）
+- `handStrength(cards)` — 手牌强度评估（对子+同花+连牌）
+- 注意：当前 showdown 直接使用 `handStrength` 比较，未实现完整7张牌选5张的牌型判定
+
+### 表情系统
+- 12种表情编号 1-12，对应 `expression_map.json` 中的映射
+- `getExpressionId(phase, isWinner, isLoser, handStrengthValue)` 根据阶段和牌力选择表情
+- 关键映射：
+  - idle/dealing → 1（冷静观察）
+  - preflop 好牌 → 2（拿到好牌但装平静）
+  - preflop 烂牌 → 3（拿到烂牌但强撑镇定）
+  - flop/turn/river → 6（陷入苦思）
+  - showdown 胜者 → 8（赢牌后的得意）
+  - showdown 败者 → 9（输光后的崩溃）
+- 图片路径：`charA/${n}.png` 或 `charA/${n}_2.png`；`charB/${n}_1.png` 或 `charB/${n}_2.png`
+
+### 筹码组件 ChipStack
+- 纯函数组件，根据 `amount` 计算筹码数量（`count = clamp(2, amount/10, 14)`）
+- 6 色循环：红/蓝/绿/白/黑/金
+- 尺寸：sm（16px）、默认（22px）、lg（28px）
+
+---
+
+## 五、App.css — 关键样式
+
+### 跑道形牌桌 `.poker-table`
+- `width: min(85vw, 1000px)`
+- `aspect-ratio: 1.75 / 1`
+- `border-radius: 28.6%`
+- 背景 `#1b5e2e`（绿色毡布）
+- 外框 `#2d1f12`（木色）+ 内圈白线
+
+### 角色立绘 `.character`
+- 左侧 `left: 6%`，右侧 `right: 6%`
+- 高度通过 `width/height: min(26vw, 320px)` 控制
+- 三种 scale 状态：
+  - idle / 默认：`scale(0.82)`
+  - 行动方（focus）：`scale(1)`
+  - 非行动方（dim）：`scale(0.72)`
+- 过渡：`transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1)`
+
+### 筹码样式 `.chip`
+- 圆形，虚线边框，内阴影 + 外阴影
+- `.chip-stack` 用 `flex-direction: column-reverse` + 负 margin 实现堆叠
+- 底池筹码有 `potPulse` 动画（下注时弹跳）
+- 玩家面前 `.bet-chips` 有 `betIn` 入场动画
+
+### 公共牌 `.card`
+- 42px × 58px，圆角 5px
+- 未发牌：`background: rgba(0,0,0,0.25)` + 虚线边框
+- 已发牌：白色背景，`dealIn` 动画（从上飞入）
+
+---
+
+## 六、已完成的工作清单
+
+1. ✅ 删除旧对局代码，清空 App.jsx / App.css
+2. ✅ 废弃 Three.js 3D 方案（已清理相关文件和依赖）
+3. ✅ 重写纯 2D 跑道形牌桌
+4. ✅ 完整短牌流程：Ante → Preflop → Flop → Turn → River → Showdown → End
+5. ✅ 角色立绘集成：charA/charB 共 48 张图全部接入
+6. ✅ Excel 表情提取：4个 xlsx 文件解析，生成 `charA_expressions.csv` + `expression_map.json`
+7. ✅ ESLint 错误修复
+8. ✅ 角色视觉调整：位置向牌桌靠拢（2% → 6%），状态切换改为 scale 变换
+9. ✅ 筹码系统：
+   - 中央底池筹码堆（根据 pot 值动态变化）
+   - 玩家面前 street 下注筹码（加注时显示，street 结束消失）
+   - Ante 时双方各显示 $20 筹码
+   - 筹码跳动/入场动画
+
+---
+
+## 七、当前已知问题 / 待办事项
+
+### 高优先级
+1. **main.jsx 左侧面板被注释**：当前 `main.jsx` 中 `<LeftPanel />` 和 `<TTSControlPanel />` 被注释掉。用户要求"一步一步来"，后续需要恢复左侧弹幕+排行榜与右侧牌桌共存。
+   ```jsx
+   // main.jsx 当前状态：
+   <div style={{ position: 'fixed', inset: 0 }}>
+     {/* <LeftPanel /> */}
+     <div style={{ width: '100%', height: '100%' }}><App /></div>
+   </div>
+   ```
+
+2. **牌型判定不完整**：Showdown 阶段直接使用 `handStrength`（仅看2张底牌）比较胜负，未实现用7张牌（2底牌+5公共牌）选出最大5张的完整短牌德州牌型判定。
+
+3. **下注逻辑过于简化**：
+   - 只有"加注$40"和"跟注"两种动作
+   - 跟注没有实际金额变化
+   - 没有 All-in、弃牌、过牌等选项
+   - 没有根据对手下注动态调整
+
+### 中优先级
+4. **角色动作单一**：只有表情切换（scale 变换），没有更丰富的动画（如身体晃动、眼神变化等）。
+
+5. **缺少手牌显示**：当前只显示公共牌，双方底牌始终不显示（对观众不可见）。
+
+6. ** betting round 循环不完整**：当前每 street 只行动一轮（A→B各一次），真实德州可能需要多轮下注直到双方筹码匹配。
+
+### 低优先级
+7. **音效缺失**：没有发牌声、筹码碰撞声、All-in 音效等。
+
+8. **公共牌动画可更丰富**：当前只有简单的 `dealIn`，可以添加发牌轨迹动画。
+
+9. **历史记录**：没有对局历史、胜率统计等。
+
+---
+
+## 八、角色素材详细说明
+
+### charA（左侧角色）
+- 基础图：`1.png` ~ `12.png`
+- 变体图：`1_2.png` ~ `12_2.png`
+- 用途：根据场景选择基础图或变体图
+
+### charB（右侧角色）
+- 基础图：`1_1.png` ~ `12_1.png`
+- 变体图：`1_2.png` ~ `12_2.png`
+- 注意：charB 的基础图命名带 `_1` 后缀，变体图带 `_2`
+
+### 12种表情定义（charA_expressions.csv）
+1. 冷静观察
+2. 拿到好牌但装平静
+3. 拿到烂牌但强撑镇定
+4. 诈唬时的假自信
+5. 被对手加注
+6. 陷入苦思
+7. 自以为看穿对手
+8. 赢牌后的得意
+9. 输光后的崩溃
+10. All-in 时的决绝
+11. 明明慌了但装高手
+12. 真正的扑克脸
+
+---
+
+## 九、构建与开发
+
+```bash
+# 构建（生产环境）
+node node_modules/vite/bin/vite.js build
+
+# 开发服务器
+npm run dev
+```
+
+构建产物在 `dist/` 目录，JS bundle 约 219KB，CSS 约 5KB。
+
+---
+
+## 十、最近修改的文件（按时间倒序）
+
+1. `src/App.jsx` — 添加筹码状态管理（leftBet/rightBet）、ChipStack 组件、ante/下注视觉
+2. `src/App.css` — 添加筹码样式（.chip / .chip-stack / .bet-chips / potPulse / betIn）
+3. `src/main.jsx` — 注释掉 <LeftPanel />（由之前 agent 完成）
+
+---
+
+## 十一、给下一个 Agent 的建议
+
+1. **如果要恢复左侧面板**：取消 `main.jsx` 中的注释，注意左右布局可能需要调整（当前右侧牌桌占 100% 宽）。
+2. **如果要完善牌型判定**：需要重写 showdown 逻辑，实现 7 选 5 的完整短牌德州牌型比较（同花顺 > 四条 > 葫芦 > 同花 > 顺子 > 三条 > 两对 > 一对 > 高牌）。
+3. **如果要添加飞行动画**：当前筹码只是"出现/消失"，可以用 `position: absolute` + CSS keyframes 实现筹码从玩家位置飞到底池的动画。
+4. **素材文件较大**：角色立绘每张约 1.8-2.2MB，共 48 张，构建时已全部打包进 dist。

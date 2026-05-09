@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import threading
 
 
 def _reconfigure_stream_utf8(stream: object) -> None:
@@ -18,6 +19,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 import core
 from controller import AppViewModel, GameController, PlayerID
+from server import WebSocketManager
 
 log = logging.getLogger("poker.ui")
 
@@ -990,6 +992,15 @@ def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
     w = MainWindow()
     w.show()
+
+    # 启动 WebSocket 服务器（供前端牌桌连接）
+    ws_port = int(env.get("WS_PORT", "8002"))
+    ws_manager = WebSocketManager(host="0.0.0.0", port=ws_port)
+    w.controller.add_observer(ws_manager.broadcast_sync)
+    ws_thread = threading.Thread(target=ws_manager.run, daemon=True)
+    ws_thread.start()
+    log.info("WebSocket 服务器已启动 | ws://0.0.0.0:%d/ws", ws_port)
+
     sys.exit(app.exec())
 
 
