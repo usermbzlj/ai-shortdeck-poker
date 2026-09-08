@@ -96,6 +96,33 @@ def cents_from_dollars_float(dollars: float) -> int:
     return int(round(dollars * 100))
 
 
+def parse_optional_float(text: str | None, fallback: str | float | None = None) -> float | None:
+    raw = "" if text is None else str(text).strip()
+    if not raw:
+        raw = "" if fallback is None else str(fallback).strip()
+    if not raw or raw.lower() == "none":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        fallback_raw = "" if fallback is None else str(fallback).strip()
+        if fallback_raw and fallback_raw != raw:
+            return parse_optional_float(fallback_raw)
+        return None
+
+
+def parse_positive_int(text: str | int | None, default: int, *, min_value: int = 1, max_value: int | None = None) -> int:
+    try:
+        value = int(str(text).strip()) if text is not None else default
+    except (TypeError, ValueError):
+        return default
+    if value < min_value:
+        return default
+    if max_value is not None and value > max_value:
+        return max_value
+    return value
+
+
 def parse_card(text: str) -> Card:
     t = (text or "").strip()
     if len(t) != 2:
@@ -323,8 +350,6 @@ class LLMClient:
             payload["temperature"] = temperature
         if thinking_enabled:
             payload["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
-        else:
-            payload["thinking"] = {"type": "disabled"}
         log.debug(
             "LLM 请求准备 | model=%s | base=%s | key=%s | temp=%s | thinking=%s",
             self.model, self.base_url, _mask_key(self.api_key), temperature, thinking_enabled,
@@ -409,9 +434,23 @@ class HandState:
     def bb_player(self) -> str:
         return self.other(self.button)
 
+    def _validate_blinds(self) -> None:
+        if self.sb_cents <= 0 or self.bb_cents <= 0:
+            raise UserFacingError("盲注必须大于 0")
+        if self.sb_cents > self.bb_cents:
+            raise UserFacingError("小盲注不能大于大盲注")
+
+    def _validate_new_match_config(self) -> None:
+        self._validate_blinds()
+        if self.start_stack_cents <= 0:
+            raise UserFacingError("初始筹码必须大于 0")
+        if self.start_stack_cents < self.bb_cents:
+            raise UserFacingError("初始筹码不能小于大盲注")
+
     def new_match(self, start_stack_cents: int | None = None) -> None:
         if start_stack_cents is not None:
             self.start_stack_cents = start_stack_cents
+        self._validate_new_match_config()
         self.hand_id = 0
         self.button = self.players[0]
         self.stacks = {p: self.start_stack_cents for p in self.players}
@@ -445,6 +484,9 @@ class HandState:
         self.win_reason: str | None = None
 
     def start_hand(self) -> None:
+        self._validate_blinds()
+        if any(v <= 0 for v in self.stacks.values()):
+            raise UserFacingError("一方筹码已归零，不能开始下一手；请开始新比赛")
         self.hand_id += 1
         if self.hand_id > 1:
             self.button = self.other(self.button)
@@ -561,7 +603,7 @@ class HandState:
 
         self._validate_no_duplicates()
 
-    def _post(self, p: str, amount: int) -> None:
+    def _post(self, p: str, amount: int) -> int:
         pay = min(amount, self.stacks[p])
         self.stacks[p] -= pay
         self.pot_cents += pay
@@ -569,18 +611,28 @@ class HandState:
         # contributed_total 记录本手牌内累计投入，仅用于 showdown 边池计算，
         # 不与 pot_cents 同步（fold 结算后 pot_cents 归零但 contributed_total 不变）。
         self.contributed_total[p] += pay
+        return pay
 
     def post_blinds(self) -> None:
         sb, bb = self.sb_player(), self.bb_player()
-        self._post(sb, self.sb_cents)
-        self._post(bb, self.bb_cents)
+        sb_paid = self._post(sb, self.sb_cents)
+        bb_paid = self._post(bb, self.bb_cents)
 
-        self.current_bet_cents = self.bb_cents
+        self.current_bet_cents = max(self.contributed_street.values())
         self.last_full_raise_size_cents = self.bb_cents
+        self._settle_excess()
+        self.current_bet_cents = max(self.contributed_street.values())
 
-        self.next_to_act = sb
+        if self.stacks[sb] > 0 and (self.stacks[bb] > 0 or self.to_call_cents(sb) > 0):
+            self.next_to_act = sb
+        else:
+            self.next_to_act = None
+
+        sb_note = " (All-in)" if sb_paid < self.sb_cents else ""
+        bb_note = " (All-in)" if bb_paid < self.bb_cents else ""
         self.action_history.append(
-            f"Preflop: {sb} posts SB ${dollars_from_cents(self.sb_cents)}, {bb} posts BB ${dollars_from_cents(self.bb_cents)}."
+            f"Preflop: {sb} posts SB ${dollars_from_cents(sb_paid)}{sb_note}, "
+            f"{bb} posts BB ${dollars_from_cents(bb_paid)}{bb_note}."
         )
 
     def to_call_cents(self, p: str) -> int:
@@ -596,6 +648,16 @@ class HandState:
 
         to_call = self.to_call_cents(p)
         stack = self.stacks[p]
+        if stack <= 0:
+            return {
+                "actions": [],
+                "to_call_cents": max(0, to_call),
+                "stack_cents": stack,
+                "min_bet_to_cents": None,
+                "min_raise_to_cents": self.current_bet_cents + self.last_full_raise_size_cents,
+                "max_to_cents": self.contributed_street[p],
+                "suggested_to_cents": None,
+            }
 
         # 判断是否 facing_bet：
         # 1. 如果需要补齐金额 (to_call > 0) → facing_bet
@@ -617,7 +679,8 @@ class HandState:
 
         max_to = self.contributed_street[p] + stack
 
-        if stack > 0 and self.can_raise[p]:
+        opp_stack = self.stacks[self.other(p)]
+        if stack > 0 and opp_stack > 0 and self.can_raise[p]:
             if self.current_bet_cents > 0:
                 if max_to > self.current_bet_cents:
                     actions.append("raise")
@@ -767,6 +830,7 @@ class HandState:
         self.contributed_total[over] -= excess
         refund_street = min(excess, self.contributed_street[over])
         self.contributed_street[over] -= refund_street
+        self.current_bet_cents = max(self.contributed_street.values())
         log.info(
             "_settle_excess | 退还 %s %d 分 | pot=%d | stacks=%s",
             over, excess, self.pot_cents, dict(self.stacks),

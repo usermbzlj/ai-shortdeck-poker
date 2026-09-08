@@ -166,13 +166,11 @@ class GameController(QtCore.QObject):
     @staticmethod
     def _parse_temp(raw: str, fallback: str = "") -> float | None:
         """解析温度值。空串 / 'none' 返回 None（不发送），否则返回 float。"""
-        v = (raw or "").strip().lower()
-        if not v or v == "none":
-            return None
-        try:
-            return float(v)
-        except ValueError:
-            return None
+        return core.parse_optional_float(raw, fallback)
+
+    @staticmethod
+    def _parse_budget(raw: str) -> int:
+        return core.parse_positive_int(raw, 8000, min_value=1, max_value=100000)
 
     def load_env(self, env: dict[str, str]) -> None:
         log.info("load_env: 加载配置 (%d 项)", len(env))
@@ -181,9 +179,17 @@ class GameController(QtCore.QObject):
         def resolve_temp(per_ai_key: str, default: str = "") -> float | None:
             raw = env.get(per_ai_key, "").strip()
             if raw:
-                return self._parse_temp(raw)
+                if raw.lower() == "none":
+                    return None
+                parsed = self._parse_temp(raw)
+                if parsed is not None:
+                    return parsed
             if global_temp:
-                return self._parse_temp(global_temp)
+                if global_temp.lower() == "none":
+                    return None
+                parsed = self._parse_temp(global_temp)
+                if parsed is not None:
+                    return parsed
             return self._parse_temp(default)
 
         self.profile["AI_A"] = LLMProfile(
@@ -193,7 +199,7 @@ class GameController(QtCore.QObject):
             temperature=resolve_temp("A_TEMPERATURE", "0.2"),
             name=env.get("A_NAME", "").strip() or "AI_A",
             thinking_enabled=env.get("A_THINKING_ENABLED", "").lower() == "true",
-            thinking_budget=int(env.get("A_THINKING_BUDGET", "8000") or "8000"),
+            thinking_budget=self._parse_budget(env.get("A_THINKING_BUDGET", "8000")),
             memory_enabled=env.get("A_MEMORY_ENABLED", "true").lower() != "false",
         )
         self.profile["AI_B"] = LLMProfile(
@@ -203,7 +209,7 @@ class GameController(QtCore.QObject):
             temperature=resolve_temp("B_TEMPERATURE", "0.2"),
             name=env.get("B_NAME", "").strip() or "AI_B",
             thinking_enabled=env.get("B_THINKING_ENABLED", "").lower() == "true",
-            thinking_budget=int(env.get("B_THINKING_BUDGET", "8000") or "8000"),
+            thinking_budget=self._parse_budget(env.get("B_THINKING_BUDGET", "8000")),
             memory_enabled=env.get("B_MEMORY_ENABLED", "true").lower() != "false",
         )
         self.commentator = CommentatorProfile(
@@ -212,7 +218,7 @@ class GameController(QtCore.QObject):
             model=env.get("COMMENTATOR_MODEL", ""),
             temperature=self._parse_temp(env.get("COMMENTATOR_TEMPERATURE", ""), "0.7"),
             thinking_enabled=env.get("COMMENTATOR_THINKING_ENABLED", "").lower() == "true",
-            thinking_budget=int(env.get("COMMENTATOR_THINKING_BUDGET", "8000") or "8000"),
+            thinking_budget=self._parse_budget(env.get("COMMENTATOR_THINKING_BUDGET", "8000")),
             on_action=env.get("COMMENTATOR_ON_ACTION", "true").lower() != "false",
             on_street=env.get("COMMENTATOR_ON_STREET", "true").lower() != "false",
             on_hand=env.get("COMMENTATOR_ON_HAND", "true").lower() != "false",
