@@ -375,10 +375,7 @@ class GameController(QtCore.QObject):
                 self.start_next_hand()
                 self.logAppended.emit("▶ 自动开始下一手")
             except Exception as e:
-                self._raise_error(str(e))
-                self.auto_running = False
-                self._paused_reason = "自动开始下一手失败"
-                self._emit_vm()
+                self._pause_auto("自动开始下一手失败", str(e))
             return
 
         if s.next_to_act is None:
@@ -387,18 +384,12 @@ class GameController(QtCore.QObject):
                     try:
                         self.showdown()
                     except Exception as e:
-                        self._raise_error(str(e))
-                        self.auto_running = False
-                        self._paused_reason = "摊牌失败"
-                        self._emit_vm()
+                        self._pause_auto("摊牌失败", str(e))
                     return
                 try:
                     self.advance_street()
                 except Exception as e:
-                    self._raise_error(str(e))
-                    self.auto_running = False
-                    self._paused_reason = "推进街失败"
-                    self._emit_vm()
+                    self._pause_auto("推进街失败", str(e))
                 return
 
             self.auto_running = False
@@ -413,10 +404,7 @@ class GameController(QtCore.QObject):
             try:
                 self.state.ensure_dealt(self.state.street)
             except Exception as e:
-                self._raise_error(str(e))
-                self.auto_running = False
-                self._paused_reason = "补牌失败"
-                self._emit_vm()
+                self._pause_auto("补牌失败", str(e))
                 return
 
         self.request_ai_decision()
@@ -604,17 +592,7 @@ class GameController(QtCore.QObject):
         if req_id != self.active_request_id:
             log.debug("忽略过期请求 req_id=%d (active=%d)", req_id, self.active_request_id)
             return
-        self.thinking = False
-        self._consecutive_failures += 1
-        pname = self._display_name(player)  # type: ignore[arg-type]
-        remaining = self.max_consecutive_failures - self._consecutive_failures
-        self.logAppended.emit(f"[{pname}] 请求失败 (连续第 {self._consecutive_failures} 次，还剩 {max(remaining, 0)} 次机会)")
-        self._raise_error(err)
-        if self._consecutive_failures >= self.max_consecutive_failures and self.auto_running:
-            self.auto_running = False
-            self._paused_reason = f"连续 {self._consecutive_failures} 次调用失败，已自动停止"
-            self.logAppended.emit(f"■ {self._paused_reason}")
-        self._emit_vm()
+        self._handle_ai_failure(player, err)
 
     def _handle_llm_result(self, req_id: int, player: str, content: str, reasoning: str) -> None:
         log.debug("_handle_llm_result | req_id=%d | active=%d | player=%s", req_id, self.active_request_id, player)
@@ -622,7 +600,6 @@ class GameController(QtCore.QObject):
             log.debug("忽略过期请求 req_id=%d (active=%d)", req_id, self.active_request_id)
             return
         self.thinking = False
-        self._consecutive_failures = 0
         pid: PlayerID = player  # type: ignore[assignment]
         pname = self._display_name(pid)
         try:
@@ -699,7 +676,9 @@ class GameController(QtCore.QObject):
                 self._trigger_commentary(event_text, is_action=True)
 
         except Exception as e:
-            self._raise_error(str(e))
+            self._handle_ai_failure(player, str(e))
+            return
+        self._consecutive_failures = 0
         self._emit_vm()
 
     # ─────────────────────────── 比赛统计 ──────────────────────────
@@ -953,6 +932,37 @@ class GameController(QtCore.QObject):
     def _invalidate_requests(self) -> None:
         self.active_request_id = 0
         self.thinking = False
+
+    def _pause_auto(self, reason: str, error: str | None = None) -> None:
+        self.auto_running = False
+        self._paused_reason = reason
+        self._invalidate_requests()
+        if error:
+            self.last_error = error
+        self._emit_vm()
+        if error:
+            self.errorRaised.emit(error)
+
+    def _handle_ai_failure(self, player: str, err: str) -> None:
+        self.thinking = False
+        self._consecutive_failures += 1
+        pname = self._display_name(player)  # type: ignore[arg-type]
+        remaining = self.max_consecutive_failures - self._consecutive_failures
+        self.last_error = err
+        self.logAppended.emit(
+            f"[{pname}] 请求失败 (连续第 {self._consecutive_failures} 次，还剩 {max(remaining, 0)} 次机会)"
+        )
+        self.logAppended.emit(f"[{pname}] 错误: {err[:500]}")
+
+        if self.auto_running and self._consecutive_failures >= self.max_consecutive_failures:
+            reason = f"连续 {self._consecutive_failures} 次调用失败，已自动停止"
+            self.logAppended.emit(f"■ {reason}")
+            self._pause_auto(reason, err)
+            return
+
+        self._emit_vm()
+        if not self.auto_running:
+            self.errorRaised.emit(err)
 
     def _raise_error(self, msg: str) -> None:
         self.last_error = msg

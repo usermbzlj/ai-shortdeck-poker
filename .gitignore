@@ -12,6 +12,9 @@ __pycache__/
 # Debug 日志
 log/
 
+# Local CodeGraph index
+.codegraph/
+
 # uv lock file (optional, uncomment if you want to track it)
 # uv.lock
 
