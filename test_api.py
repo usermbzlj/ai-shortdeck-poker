@@ -24,13 +24,36 @@ COMMENTATOR_MESSAGES = [
 ]
 
 
+def resolve_temperature(env: dict[str, str], key: str, default: str) -> float | None:
+    raw = env.get(key, "").strip()
+    global_temp = env.get("TEMPERATURE", "").strip()
+    if raw:
+        if raw.lower() == "none":
+            return None
+        parsed = core.parse_optional_float(raw)
+        if parsed is not None:
+            return parsed
+    if global_temp:
+        if global_temp.lower() == "none":
+            return None
+        parsed = core.parse_optional_float(global_temp)
+        if parsed is not None:
+            return parsed
+    return core.parse_optional_float(default)
+
+
+def resolve_budget(env: dict[str, str], key: str) -> int:
+    return core.parse_positive_int(env.get(key, "8000"), 8000, min_value=1, max_value=100000)
+
+
 def test_endpoint(label: str, base_url: str, api_key: str, model: str,
-                  temperature: float, thinking_enabled: bool, thinking_budget: int,
+                  temperature: float | None, thinking_enabled: bool, thinking_budget: int,
                   messages: list[dict], expect_json: bool = True) -> bool:
     print(f"\n{'='*60}")
     print(f"测试: {label}")
     print(f"  Base URL : {base_url}")
     print(f"  Model    : {model}")
+    print(f"  Temp     : {'不发送' if temperature is None else temperature}")
     print(f"  Thinking : {'开启' if thinking_enabled else '关闭'}"
           + (f" (budget={thinking_budget})" if thinking_enabled else ""))
     print(f"{'='*60}")
@@ -83,7 +106,6 @@ def main():
         sys.exit(1)
 
     print(f"已加载 .env ({len(env)} 项)")
-    temp = float(env.get("TEMPERATURE", "0.2") or "0.2")
 
     results: list[tuple[str, bool]] = []
 
@@ -93,9 +115,9 @@ def main():
         base_url=env.get("A_BASE_URL", ""),
         api_key=env.get("A_API_KEY", ""),
         model=env.get("A_MODEL", ""),
-        temperature=temp,
+        temperature=resolve_temperature(env, "A_TEMPERATURE", "0.2"),
         thinking_enabled=env.get("A_THINKING_ENABLED", "").lower() == "true",
-        thinking_budget=int(env.get("A_THINKING_BUDGET", "8000") or "8000"),
+        thinking_budget=resolve_budget(env, "A_THINKING_BUDGET"),
         messages=TEST_MESSAGES,
     )
     results.append(("AI_A", ok))
@@ -106,9 +128,9 @@ def main():
         base_url=env.get("B_BASE_URL", ""),
         api_key=env.get("B_API_KEY", ""),
         model=env.get("B_MODEL", ""),
-        temperature=temp,
+        temperature=resolve_temperature(env, "B_TEMPERATURE", "0.2"),
         thinking_enabled=env.get("B_THINKING_ENABLED", "").lower() == "true",
-        thinking_budget=int(env.get("B_THINKING_BUDGET", "8000") or "8000"),
+        thinking_budget=resolve_budget(env, "B_THINKING_BUDGET"),
         messages=TEST_MESSAGES,
     )
     results.append(("AI_B", ok))
@@ -119,9 +141,9 @@ def main():
         base_url=env.get("COMMENTATOR_BASE_URL", ""),
         api_key=env.get("COMMENTATOR_API_KEY", ""),
         model=env.get("COMMENTATOR_MODEL", ""),
-        temperature=float(env.get("COMMENTATOR_TEMPERATURE", "0.7") or "0.7"),
+        temperature=core.parse_optional_float(env.get("COMMENTATOR_TEMPERATURE", ""), "0.7"),
         thinking_enabled=env.get("COMMENTATOR_THINKING_ENABLED", "").lower() == "true",
-        thinking_budget=int(env.get("COMMENTATOR_THINKING_BUDGET", "8000") or "8000"),
+        thinking_budget=resolve_budget(env, "COMMENTATOR_THINKING_BUDGET"),
         messages=COMMENTATOR_MESSAGES,
         expect_json=False,
     )
