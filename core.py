@@ -109,11 +109,10 @@ def parse_optional_float(text: str | None, fallback: str | float | None = None) 
             return value
     except ValueError:
         pass
-    if True:
-        fallback_raw = "" if fallback is None else str(fallback).strip()
-        if fallback_raw and fallback_raw != raw:
-            return parse_optional_float(fallback_raw)
-        return None
+    fallback_raw = "" if fallback is None else str(fallback).strip()
+    if fallback_raw and fallback_raw != raw:
+        return parse_optional_float(fallback_raw)
+    return None
 
 
 def parse_positive_int(text: str | int | None, default: int, *, min_value: int = 1, max_value: int | None = None) -> int:
