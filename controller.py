@@ -166,13 +166,11 @@ class GameController(QtCore.QObject):
     @staticmethod
     def _parse_temp(raw: str, fallback: str = "") -> float | None:
         """解析温度值。空串 / 'none' 返回 None（不发送），否则返回 float。"""
-        v = (raw or "").strip().lower()
-        if not v or v == "none":
-            return None
-        try:
-            return float(v)
-        except ValueError:
-            return None
+        return core.parse_optional_float(raw, fallback)
+
+    @staticmethod
+    def _parse_budget(raw: str) -> int:
+        return core.parse_positive_int(raw, 8000, min_value=1, max_value=100000)
 
     def load_env(self, env: dict[str, str]) -> None:
         log.info("load_env: 加载配置 (%d 项)", len(env))
@@ -181,9 +179,17 @@ class GameController(QtCore.QObject):
         def resolve_temp(per_ai_key: str, default: str = "") -> float | None:
             raw = env.get(per_ai_key, "").strip()
             if raw:
-                return self._parse_temp(raw)
+                if raw.lower() == "none":
+                    return None
+                parsed = self._parse_temp(raw)
+                if parsed is not None:
+                    return parsed
             if global_temp:
-                return self._parse_temp(global_temp)
+                if global_temp.lower() == "none":
+                    return None
+                parsed = self._parse_temp(global_temp)
+                if parsed is not None:
+                    return parsed
             return self._parse_temp(default)
 
         self.profile["AI_A"] = LLMProfile(
@@ -193,7 +199,7 @@ class GameController(QtCore.QObject):
             temperature=resolve_temp("A_TEMPERATURE", "0.2"),
             name=env.get("A_NAME", "").strip() or "AI_A",
             thinking_enabled=env.get("A_THINKING_ENABLED", "").lower() == "true",
-            thinking_budget=int(env.get("A_THINKING_BUDGET", "8000") or "8000"),
+            thinking_budget=self._parse_budget(env.get("A_THINKING_BUDGET", "8000")),
             memory_enabled=env.get("A_MEMORY_ENABLED", "true").lower() != "false",
         )
         self.profile["AI_B"] = LLMProfile(
@@ -203,7 +209,7 @@ class GameController(QtCore.QObject):
             temperature=resolve_temp("B_TEMPERATURE", "0.2"),
             name=env.get("B_NAME", "").strip() or "AI_B",
             thinking_enabled=env.get("B_THINKING_ENABLED", "").lower() == "true",
-            thinking_budget=int(env.get("B_THINKING_BUDGET", "8000") or "8000"),
+            thinking_budget=self._parse_budget(env.get("B_THINKING_BUDGET", "8000")),
             memory_enabled=env.get("B_MEMORY_ENABLED", "true").lower() != "false",
         )
         self.commentator = CommentatorProfile(
@@ -212,7 +218,7 @@ class GameController(QtCore.QObject):
             model=env.get("COMMENTATOR_MODEL", ""),
             temperature=self._parse_temp(env.get("COMMENTATOR_TEMPERATURE", ""), "0.7"),
             thinking_enabled=env.get("COMMENTATOR_THINKING_ENABLED", "").lower() == "true",
-            thinking_budget=int(env.get("COMMENTATOR_THINKING_BUDGET", "8000") or "8000"),
+            thinking_budget=self._parse_budget(env.get("COMMENTATOR_THINKING_BUDGET", "8000")),
             on_action=env.get("COMMENTATOR_ON_ACTION", "true").lower() != "false",
             on_street=env.get("COMMENTATOR_ON_STREET", "true").lower() != "false",
             on_hand=env.get("COMMENTATOR_ON_HAND", "true").lower() != "false",
@@ -375,7 +381,10 @@ class GameController(QtCore.QObject):
                 self.start_next_hand()
                 self.logAppended.emit("▶ 自动开始下一手")
             except Exception as e:
-                self._pause_auto("自动开始下一手失败", str(e))
+                self._raise_error(str(e))
+                self.auto_running = False
+                self._paused_reason = "自动开始下一手失败"
+                self._emit_vm()
             return
 
         if s.next_to_act is None:
@@ -384,12 +393,18 @@ class GameController(QtCore.QObject):
                     try:
                         self.showdown()
                     except Exception as e:
-                        self._pause_auto("摊牌失败", str(e))
+                        self._raise_error(str(e))
+                        self.auto_running = False
+                        self._paused_reason = "摊牌失败"
+                        self._emit_vm()
                     return
                 try:
                     self.advance_street()
                 except Exception as e:
-                    self._pause_auto("推进街失败", str(e))
+                    self._raise_error(str(e))
+                    self.auto_running = False
+                    self._paused_reason = "推进街失败"
+                    self._emit_vm()
                 return
 
             self.auto_running = False
@@ -404,7 +419,10 @@ class GameController(QtCore.QObject):
             try:
                 self.state.ensure_dealt(self.state.street)
             except Exception as e:
-                self._pause_auto("补牌失败", str(e))
+                self._raise_error(str(e))
+                self.auto_running = False
+                self._paused_reason = "补牌失败"
+                self._emit_vm()
                 return
 
         self.request_ai_decision()
@@ -592,7 +610,17 @@ class GameController(QtCore.QObject):
         if req_id != self.active_request_id:
             log.debug("忽略过期请求 req_id=%d (active=%d)", req_id, self.active_request_id)
             return
-        self._handle_ai_failure(player, err)
+        self.thinking = False
+        self._consecutive_failures += 1
+        pname = self._display_name(player)  # type: ignore[arg-type]
+        remaining = self.max_consecutive_failures - self._consecutive_failures
+        self.logAppended.emit(f"[{pname}] 请求失败 (连续第 {self._consecutive_failures} 次，还剩 {max(remaining, 0)} 次机会)")
+        self._raise_error(err)
+        if self._consecutive_failures >= self.max_consecutive_failures and self.auto_running:
+            self.auto_running = False
+            self._paused_reason = f"连续 {self._consecutive_failures} 次调用失败，已自动停止"
+            self.logAppended.emit(f"■ {self._paused_reason}")
+        self._emit_vm()
 
     def _handle_llm_result(self, req_id: int, player: str, content: str, reasoning: str) -> None:
         log.debug("_handle_llm_result | req_id=%d | active=%d | player=%s", req_id, self.active_request_id, player)
@@ -600,6 +628,7 @@ class GameController(QtCore.QObject):
             log.debug("忽略过期请求 req_id=%d (active=%d)", req_id, self.active_request_id)
             return
         self.thinking = False
+        self._consecutive_failures = 0
         pid: PlayerID = player  # type: ignore[assignment]
         pname = self._display_name(pid)
         try:
@@ -676,9 +705,7 @@ class GameController(QtCore.QObject):
                 self._trigger_commentary(event_text, is_action=True)
 
         except Exception as e:
-            self._handle_ai_failure(player, str(e))
-            return
-        self._consecutive_failures = 0
+            self._raise_error(str(e))
         self._emit_vm()
 
     # ─────────────────────────── 比赛统计 ──────────────────────────
@@ -932,37 +959,6 @@ class GameController(QtCore.QObject):
     def _invalidate_requests(self) -> None:
         self.active_request_id = 0
         self.thinking = False
-
-    def _pause_auto(self, reason: str, error: str | None = None) -> None:
-        self.auto_running = False
-        self._paused_reason = reason
-        self._invalidate_requests()
-        if error:
-            self.last_error = error
-        self._emit_vm()
-        if error:
-            self.errorRaised.emit(error)
-
-    def _handle_ai_failure(self, player: str, err: str) -> None:
-        self.thinking = False
-        self._consecutive_failures += 1
-        pname = self._display_name(player)  # type: ignore[arg-type]
-        remaining = self.max_consecutive_failures - self._consecutive_failures
-        self.last_error = err
-        self.logAppended.emit(
-            f"[{pname}] 请求失败 (连续第 {self._consecutive_failures} 次，还剩 {max(remaining, 0)} 次机会)"
-        )
-        self.logAppended.emit(f"[{pname}] 错误: {err[:500]}")
-
-        if self.auto_running and self._consecutive_failures >= self.max_consecutive_failures:
-            reason = f"连续 {self._consecutive_failures} 次调用失败，已自动停止"
-            self.logAppended.emit(f"■ {reason}")
-            self._pause_auto(reason, err)
-            return
-
-        self._emit_vm()
-        if not self.auto_running:
-            self.errorRaised.emit(err)
 
     def _raise_error(self, msg: str) -> None:
         self.last_error = msg
