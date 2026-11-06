@@ -187,6 +187,14 @@ def best_hand_rank_7(cards7: list[Card]) -> tuple:
     return max(evaluate_5(list(comb)) for comb in combinations(cards7, 5))
 
 
+def best_five_cards(cards: list[Card]) -> list[Card]:
+    if len(cards) < 5:
+        return []
+    if len(set(cards)) != len(cards):
+        raise ValueError("最佳五张牌中存在重复牌")
+    return list(max(combinations(cards, 5), key=lambda hand: evaluate_5(list(hand))))
+
+
 def describe_hand_rank(rank_tuple: tuple) -> str:
     return HAND_RANK_NAMES.get(rank_tuple[0], "未知")
 
@@ -604,7 +612,7 @@ class HandState:
 
         self.next_to_act = sb
         self.action_history.append(
-            f"Preflop: {sb} posts SB ${dollars_from_cents(self.sb_cents)}, {bb} posts BB ${dollars_from_cents(self.bb_cents)}."
+            f"翻牌前：{sb} 下小盲 ${dollars_from_cents(self.sb_cents)}，{bb} 下大盲 ${dollars_from_cents(self.bb_cents)}"
         )
 
     def to_call_cents(self, p: str) -> int:
@@ -685,7 +693,9 @@ class HandState:
             raise UserFacingError(f"非法动作：{act}。允许的动作：{legal['actions']}")
 
         opp = self.other(p)
-        history_str = f"[{self.street.capitalize()}] {p} {act}s"
+        street_cn = {"preflop": "翻牌前", "flop": "翻牌", "turn": "转牌", "river": "河牌"}[self.street]
+        action_cn = {"fold": "弃牌", "check": "过牌", "call": "跟注", "bet": "下注", "raise": "加注"}[act]
+        history_str = f"[{street_cn}] {p} {action_cn}"
         self.acted[p] = True
 
         if act == "fold":
@@ -733,7 +743,7 @@ class HandState:
             self._post(p, add)
             self.can_raise[opp] = True
 
-            self.action_history.append(f"{history_str} to ${dollars_from_cents(target)}" + (" (All-in)" if is_all_in else ""))
+            self.action_history.append(f"{history_str} 至 ${dollars_from_cents(target)}" + ("（全押）" if is_all_in else ""))
             self.next_to_act = opp
             if self.stacks[opp] == 0:
                 self.next_to_act = None
@@ -759,7 +769,7 @@ class HandState:
             else:
                 self.can_raise[opp] = (not self.acted[opp])
 
-            self.action_history.append(f"{history_str} to ${dollars_from_cents(target)}" + (" (All-in)" if is_all_in else ""))
+            self.action_history.append(f"{history_str} 至 ${dollars_from_cents(target)}" + ("（全押）" if is_all_in else ""))
             self.next_to_act = opp
             if self.stacks[opp] == 0:
                 self.next_to_act = None

@@ -115,6 +115,8 @@ class ProviderControls(QtCore.QObject):
         row.setContentsMargins(0, 0, 0, 0)
         self.fetch = QtWidgets.QPushButton("拉取模型列表")
         self.test = QtWidgets.QPushButton("测试连接")
+        self.fetch.setProperty("variant", "ghost")
+        self.test.setProperty("variant", "primary")
         row.addWidget(self.fetch)
         row.addWidget(self.test)
         form.addRow(buttons)

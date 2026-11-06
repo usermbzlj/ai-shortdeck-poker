@@ -76,7 +76,7 @@ class DecisionRecoveryTests(unittest.TestCase):
         c.state.apply_action(self.player, "call", None)
         self.player = c.state.next_to_act
         self.result('{"action":"call"}')
-        self.assertEqual("CHECKS", c.state.action_history[-1].split()[-1].upper())
+        self.assertEqual("过牌", c.state.action_history[-1].split()[-1])
 
     def test_check_facing_bet_is_invalid(self):
         c = self.controller

@@ -17,6 +17,8 @@ if sys.platform == "win32":
 from PySide6 import QtCore, QtGui, QtWidgets
 
 import core
+import theme
+from table_widget import PokerTableWidget
 from settings_widgets import ModelCombo, TemperatureInput, ProviderControls
 from controller import AppViewModel, GameController, PlayerID
 
@@ -24,197 +26,11 @@ log = logging.getLogger("poker.ui")
 
 ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
 
-SUIT_CN_SHORT = {"s": "♠", "h": "♥", "d": "♦", "c": "♣"}
-SUIT_COLOR = {"s": "#1a1a1a", "h": "#d40000", "d": "#d40000", "c": "#1a1a1a"}
-
-_CARD_W, _CARD_H = 48, 62
-
-_CARD_FACE_CSS = (
-    f"background:#fffff5; border:2px solid #aaa; border-radius:6px;"
-    f"font:bold 13px 'Microsoft YaHei','Segoe UI';"
-    f"min-width:{_CARD_W}px; max-width:{_CARD_W}px;"
-    f"min-height:{_CARD_H}px; max-height:{_CARD_H}px;"
-)
-_CARD_EMPTY_CSS = (
-    f"background:#1a4d1a; border:2px dashed #3a7a3a; border-radius:6px;"
-    f"color:#3a7a3a; font:12px 'Microsoft YaHei';"
-    f"min-width:{_CARD_W}px; max-width:{_CARD_W}px;"
-    f"min-height:{_CARD_H}px; max-height:{_CARD_H}px;"
-)
-
-
-class CardLabel(QtWidgets.QLabel):
-    def __init__(self):
-        super().__init__()
-        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.set_card("")
-
-    def set_card(self, text: str) -> None:
-        if not text or len(text) < 2:
-            self.setText("")
-            self.setStyleSheet(_CARD_EMPTY_CSS)
-            return
-        rank = text[0].upper()
-        suit = text[1].lower()
-        symbol = SUIT_CN_SHORT.get(suit, "?")
-        color = SUIT_COLOR.get(suit, "#000")
-        self.setText(f"{rank}\n{symbol}")
-        self.setStyleSheet(_CARD_FACE_CSS + f" color:{color};")
-
-
-class BoardPanel(QtWidgets.QFrame):
-    """牌桌可视化面板：显示双方手牌、公共牌、筹码、底池等。"""
-
-    def __init__(self):
-        super().__init__()
-        self.setObjectName("boardPanel")
-        self.setStyleSheet(
-            "#boardPanel {"
-            "  background: qlineargradient(y1:0, y2:1, stop:0 #0d5016, stop:1 #0a3d0a);"
-            "  border-radius: 12px; border: 3px solid #1a6b1a;"
-            "}"
-        )
-        self.setMinimumHeight(270)
-        self._build()
-
-    def _build(self) -> None:
-        root = QtWidgets.QVBoxLayout(self)
-        root.setSpacing(4)
-        root.setContentsMargins(14, 10, 14, 10)
-
-        self._a = self._make_player_row()
-        root.addLayout(self._a["layout"])
-        root.addWidget(self._sep())
-
-        mid = QtWidgets.QHBoxLayout()
-        info_col = QtWidgets.QVBoxLayout()
-        self.lbl_pot = QtWidgets.QLabel("底池: $0.00")
-        self.lbl_pot.setStyleSheet("color:#ffd700; font:bold 16px; background:transparent;")
-        self.lbl_street = QtWidgets.QLabel("PREFLOP")
-        self.lbl_street.setStyleSheet("color:#aaffaa; font:bold 12px; background:transparent;")
-        self.lbl_hand = QtWidgets.QLabel("Hand #0")
-        self.lbl_hand.setStyleSheet("color:#88aa88; font:11px; background:transparent;")
-        info_col.addWidget(self.lbl_pot)
-        info_col.addWidget(self.lbl_street)
-        info_col.addWidget(self.lbl_hand)
-        mid.addLayout(info_col)
-        mid.addStretch(1)
-
-        self.community_cards: list[CardLabel] = []
-        for _ in range(5):
-            c = CardLabel()
-            self.community_cards.append(c)
-            mid.addWidget(c)
-        mid.addStretch(1)
-        root.addLayout(mid)
-
-        root.addWidget(self._sep())
-        self._b = self._make_player_row()
-        root.addLayout(self._b["layout"])
-
-    def _make_player_row(self) -> dict:
-        layout = QtWidgets.QHBoxLayout()
-        transparent = "background:transparent;"
-
-        indicator = QtWidgets.QLabel("●")
-        indicator.setFixedWidth(22)
-        indicator.setStyleSheet(f"color:#333; font:20px; {transparent}")
-        indicator.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
-        name_lbl = QtWidgets.QLabel("AI")
-        name_lbl.setStyleSheet(f"color:white; font:bold 14px; {transparent}")
-        name_lbl.setMinimumWidth(90)
-
-        btn_badge = QtWidgets.QLabel("")
-        btn_badge.setFixedSize(26, 26)
-        btn_badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        btn_badge.setStyleSheet(transparent)
-
-        cards: list[CardLabel] = []
-        for _ in range(2):
-            c = CardLabel()
-            cards.append(c)
-
-        layout.addWidget(indicator)
-        layout.addWidget(name_lbl)
-        layout.addWidget(btn_badge)
-        for c in cards:
-            layout.addWidget(c)
-        layout.addStretch(1)
-
-        stack_lbl = QtWidgets.QLabel("$0.00")
-        stack_lbl.setStyleSheet(f"color:#ffffff; font:bold 14px; {transparent}")
-        stack_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
-
-        bet_lbl = QtWidgets.QLabel("")
-        bet_lbl.setStyleSheet(f"color:#ffcc00; font:12px; {transparent}")
-        bet_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        bet_lbl.setMinimumWidth(90)
-
-        layout.addWidget(stack_lbl)
-        layout.addWidget(bet_lbl)
-
-        return {
-            "layout": layout, "indicator": indicator, "name": name_lbl,
-            "button": btn_badge, "cards": cards, "stack": stack_lbl, "bet": bet_lbl,
-        }
-
-    @staticmethod
-    def _sep() -> QtWidgets.QFrame:
-        s = QtWidgets.QFrame()
-        s.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        s.setStyleSheet("background:#2a7a2a; max-height:1px;")
-        return s
-
-    def update_state(self, vm: AppViewModel) -> None:
-        na = vm.player_names.get("AI_A", "AI_A")
-        nb = vm.player_names.get("AI_B", "AI_B")
-        self._update_player(self._a, "AI_A", na, vm)
-        self._update_player(self._b, "AI_B", nb, vm)
-
-        for i, cl in enumerate(self.community_cards):
-            cl.set_card(vm.board_cards[i] if i < len(vm.board_cards) else "")
-
-        self.lbl_pot.setText(f"底池: ${core.dollars_from_cents(vm.pot_cents)}")
-        self.lbl_street.setText(vm.street.upper())
-        self.lbl_hand.setText(f"Hand #{vm.hand_id}")
-
-    @staticmethod
-    def _update_player(row: dict, pid: PlayerID, name: str, vm: AppViewModel) -> None:
-        t = "background:transparent;"
-        row["name"].setText(name)
-
-        hole = vm.hole_cards.get(pid, ["", ""])
-        for i, cl in enumerate(row["cards"]):
-            cl.set_card(hole[i] if i < len(hole) else "")
-
-        stack = vm.stacks_cents.get(pid, 0)
-        row["stack"].setText(f"💰 ${core.dollars_from_cents(stack)}")
-
-        bet = vm.contributed_street_cents.get(pid, 0)
-        row["bet"].setText(f"下注: ${core.dollars_from_cents(bet)}" if bet > 0 else "")
-
-        is_active = vm.next_to_act == pid
-        row["indicator"].setStyleSheet(
-            f"color:{'#00ff00' if is_active else '#333'}; font:20px; {t}"
-        )
-
-        if vm.button == pid:
-            row["button"].setText("D")
-            row["button"].setStyleSheet(
-                "background:#ffd700; color:#333; font:bold 12px;"
-                "border-radius:13px; min-width:26px; min-height:26px;"
-            )
-        else:
-            row["button"].setText("")
-            row["button"].setStyleSheet(t)
-
-
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("短牌德州 LLM 对战引擎")
-        self.resize(1400, 850)
+        self.resize(1600, 1000)
 
         self.controller = GameController()
         self.controller.viewModelChanged.connect(self.on_vm_changed)
@@ -241,6 +57,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # ── 左侧：对局 + 设置 tabs ──
         left = QtWidgets.QWidget()
+        left.setObjectName("workspace")
         left_layout = QtWidgets.QVBoxLayout(left)
         left_layout.setContentsMargins(8, 8, 8, 8)
 
@@ -263,7 +80,7 @@ class MainWindow(QtWidgets.QMainWindow):
         right_layout = QtWidgets.QVBoxLayout(right)
         right_layout.setContentsMargins(8, 8, 8, 8)
         self.error_bar = QtWidgets.QFrame()
-        self.error_bar.setStyleSheet("QFrame { background:#fff0ed; color:#9b2525; border-radius:5px; }")
+        self.error_bar.setObjectName("notification")
         error_layout = QtWidgets.QVBoxLayout(self.error_bar)
         error_row = QtWidgets.QHBoxLayout()
         self.error_summary = QtWidgets.QLabel()
@@ -289,34 +106,35 @@ class MainWindow(QtWidgets.QMainWindow):
         self.error_bar.hide()
         right_layout.addWidget(self.error_bar)
 
-        self.board_panel = BoardPanel()
+        self.board_panel = PokerTableWidget()
 
         self.log = QtWidgets.QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setFont(QtGui.QFont("Consolas", 10))
+        self.log.setFont(theme.font(9, mono=True))
 
         self.commentary = QtWidgets.QTextEdit()
         self.commentary.setReadOnly(True)
-        self.commentary.setFont(QtGui.QFont("Microsoft YaHei", 10))
-        self.commentary.setStyleSheet("QTextEdit { background-color: #1a1a2e; color: #e0e0ff; }")
+        self.commentary.setFont(theme.font(10))
         self.commentary.setPlaceholderText("解说员尚未配置或未开启...")
 
         self.history = QtWidgets.QListWidget()
 
         right_split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         right_split.addWidget(self.board_panel)
-        right_split.addWidget(self._make_labeled_group("📋 对局日志", self.log))
-        right_split.addWidget(self._make_labeled_group("🎙️ 解说席", self.commentary))
-        right_split.addWidget(self._make_labeled_group("📜 行动历史", self.history))
-        right_split.setStretchFactor(0, 2)
-        right_split.setStretchFactor(1, 3)
-        right_split.setStretchFactor(2, 2)
-        right_split.setStretchFactor(3, 1)
+        feeds = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        feeds.addWidget(self._make_labeled_group("对局日志", self.log))
+        feeds.addWidget(self._make_labeled_group("解说席", self.commentary))
+        feeds.addWidget(self._make_labeled_group("行动历史", self.history))
+        right_split.addWidget(feeds)
+        right_split.setStretchFactor(0, 4)
+        right_split.setStretchFactor(1, 1)
+        right_split.setSizes([740, 180])
 
         right_layout.addWidget(right_split, 1)
         splitter.addWidget(right)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([460, 1140])
 
         self.status = QtWidgets.QStatusBar()
         self.setStatusBar(self.status)
@@ -331,36 +149,22 @@ class MainWindow(QtWidgets.QMainWindow):
     # ───────────────────── 对局 Tab ─────────────────────
 
     def _build_game_tab(self) -> None:
-        layout = QtWidgets.QVBoxLayout(self.tab_game)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(container)
+        scroll.setWidget(container)
+        tab_layout = QtWidgets.QVBoxLayout(self.tab_game)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.addWidget(scroll)
         self.config_banner = QtWidgets.QWidget()
+        self.config_banner.setObjectName("configBanner")
         banner_layout = QtWidgets.QVBoxLayout(self.config_banner)
         banner_layout.addWidget(QtWidgets.QLabel("尚未配置 AI 选手，请先在设置页填写并测试连接"))
         jump = QtWidgets.QPushButton("前往设置")
         jump.clicked.connect(lambda: self.tabs.setCurrentWidget(self.tab_settings))
         banner_layout.addWidget(jump)
         layout.addWidget(self.config_banner)
-
-        _HINT = "color:#888; font:11px;"
-        _BTN_PRIMARY = (
-            "QPushButton { background:#2563eb; color:white; font:bold 13px; padding:6px 12px;"
-            "border-radius:4px; } QPushButton:disabled { background:#555; color:#999; }"
-        )
-        _BTN_DANGER = (
-            "QPushButton { background:#dc2626; color:white; font:bold 13px; padding:6px 12px;"
-            "border-radius:4px; } QPushButton:disabled { background:#555; color:#999; }"
-        )
-        _BTN_SUCCESS = (
-            "QPushButton { background:#16a34a; color:white; font:bold 13px; padding:6px 12px;"
-            "border-radius:4px; } QPushButton:disabled { background:#555; color:#999; }"
-        )
-        _BTN_WARN = (
-            "QPushButton { background:#d97706; color:white; font:bold 13px; padding:6px 12px;"
-            "border-radius:4px; } QPushButton:disabled { background:#555; color:#999; }"
-        )
-        _BTN_NORMAL = (
-            "QPushButton { font:13px; padding:6px 10px; border-radius:4px; }"
-            "QPushButton:disabled { color:#999; }"
-        )
 
         # ── 对局控制 ──
         match_box = QtWidgets.QGroupBox("对局控制")
@@ -387,10 +191,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         row_start = QtWidgets.QHBoxLayout()
         self.btn_new_match = QtWidgets.QPushButton("开始新比赛")
-        self.btn_new_match.setStyleSheet(_BTN_PRIMARY)
+        self.btn_new_match.setProperty("variant", "primary")
         self.btn_new_match.setToolTip("重置双方筹码，开始一场全新比赛")
         self.btn_next_hand = QtWidgets.QPushButton("开始下一手")
-        self.btn_next_hand.setStyleSheet(_BTN_SUCCESS)
+        self.btn_next_hand.setProperty("variant", "secondary")
         self.btn_next_hand.setToolTip("当前手牌结束后，点此发下一手牌")
         row_start.addWidget(self.btn_new_match)
         row_start.addWidget(self.btn_next_hand)
@@ -398,10 +202,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         row_advance = QtWidgets.QHBoxLayout()
         self.btn_next_street = QtWidgets.QPushButton("发下一轮公共牌")
-        self.btn_next_street.setStyleSheet(_BTN_WARN)
+        self.btn_next_street.setProperty("variant", "secondary")
         self.btn_next_street.setToolTip("当前轮行动结束后，翻开下一轮公共牌（翻牌→转牌→河牌）")
         self.btn_showdown = QtWidgets.QPushButton("摊牌结算")
-        self.btn_showdown.setStyleSheet(_BTN_DANGER)
+        self.btn_showdown.setProperty("variant", "secondary")
         self.btn_showdown.setToolTip("河牌轮行动结束后，双方亮牌比大小")
         row_advance.addWidget(self.btn_next_street)
         row_advance.addWidget(self.btn_showdown)
@@ -441,6 +245,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.lbl_a_cards = QtWidgets.QLabel("AI_A 底牌")
         self.lbl_b_cards = QtWidgets.QLabel("AI_B 底牌")
+        for label in (self.lbl_a_cards, self.lbl_b_cards):
+            label.setMaximumWidth(105)
+            label.setWordWrap(True)
 
         cards_layout.addWidget(self.lbl_a_cards, 0, 0)
         cards_layout.addWidget(self.a1, 0, 1)
@@ -450,21 +257,24 @@ class MainWindow(QtWidgets.QMainWindow):
         cards_layout.addWidget(self.b1, 1, 1)
         cards_layout.addWidget(self.b2, 1, 2)
 
-        cards_layout.addWidget(QtWidgets.QLabel("公共牌"), 2, 0)
-        cards_layout.addWidget(self.f1, 2, 1)
-        cards_layout.addWidget(self.f2, 2, 2)
-        cards_layout.addWidget(self.f3, 2, 3)
-        cards_layout.addWidget(self.t1, 2, 4)
-        cards_layout.addWidget(self.r1, 2, 5)
+        cards_layout.addWidget(QtWidgets.QLabel("公共牌 · 翻牌 / 转牌 / 河牌"), 2, 0, 1, 3)
+        cards_layout.addWidget(self.f1, 3, 0)
+        cards_layout.addWidget(self.f2, 3, 1)
+        cards_layout.addWidget(self.f3, 3, 2)
+        cards_layout.addWidget(QtWidgets.QLabel("转牌 / 河牌"), 4, 0)
+        cards_layout.addWidget(self.t1, 4, 1)
+        cards_layout.addWidget(self.r1, 4, 2)
 
         self.btn_lock_cards = QtWidgets.QPushButton("确认指定")
         self.btn_lock_cards.setToolTip("将上面选择的牌锁定到本局")
         self.btn_ensure_dealt = QtWidgets.QPushButton("随机补齐缺牌")
         self.btn_ensure_dealt.setToolTip("未指定的位置自动随机发牌")
-        self.btn_lock_cards.setStyleSheet(_BTN_NORMAL)
-        self.btn_ensure_dealt.setStyleSheet(_BTN_NORMAL)
-        cards_layout.addWidget(self.btn_lock_cards, 3, 0, 1, 3)
-        cards_layout.addWidget(self.btn_ensure_dealt, 3, 3, 1, 3)
+        self.btn_lock_cards.setProperty("variant", "ghost")
+        self.btn_ensure_dealt.setProperty("variant", "secondary")
+        card_buttons = QtWidgets.QHBoxLayout()
+        card_buttons.addWidget(self.btn_lock_cards)
+        card_buttons.addWidget(self.btn_ensure_dealt)
+        cards_layout.addLayout(card_buttons, 5, 0, 1, 3)
 
         self.btn_lock_cards.clicked.connect(self.on_lock_cards)
         self.btn_ensure_dealt.clicked.connect(self.on_ensure_dealt)
@@ -476,7 +286,7 @@ class MainWindow(QtWidgets.QMainWindow):
         actions_layout = QtWidgets.QGridLayout(actions_box)
 
         self.lbl_to_call = QtWidgets.QLabel("需跟注: $0.00")
-        self.lbl_to_call.setStyleSheet("font:bold 13px;")
+        self.lbl_to_call.setProperty("role", "emphasis")
         actions_layout.addWidget(self.lbl_to_call, 0, 0, 1, 3)
 
         self.to_spin = QtWidgets.QDoubleSpinBox()
@@ -500,20 +310,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_bet.setToolTip("率先下注（无人下注时可用）")
         self.btn_raise.setToolTip("在对手下注基础上加注")
 
-        _BTN_ALLIN = (
-            "QPushButton { background:#7c3aed; color:white; font:bold 13px; padding:6px 12px;"
-            "border-radius:4px; } QPushButton:disabled { background:#555; color:#999; }"
-        )
-
         self.btn_allin = QtWidgets.QPushButton("全押 (All-In)")
         self.btn_allin.setToolTip("押上全部筹码")
 
-        self.btn_fold.setStyleSheet(_BTN_DANGER)
-        self.btn_check.setStyleSheet(_BTN_NORMAL)
-        self.btn_call.setStyleSheet(_BTN_SUCCESS)
-        self.btn_bet.setStyleSheet(_BTN_WARN)
-        self.btn_raise.setStyleSheet(_BTN_WARN)
-        self.btn_allin.setStyleSheet(_BTN_ALLIN)
+        self.btn_fold.setProperty("variant", "danger")
+        self.btn_check.setProperty("variant", "secondary")
+        self.btn_call.setProperty("variant", "secondary")
+        self.btn_bet.setProperty("variant", "secondary")
+        self.btn_raise.setProperty("variant", "secondary")
+        self.btn_allin.setProperty("variant", "primary")
 
         actions_layout.addWidget(self.btn_fold, 2, 0)
         actions_layout.addWidget(self.btn_check, 2, 1)
@@ -558,8 +363,8 @@ class MainWindow(QtWidgets.QMainWindow):
         row2 = QtWidgets.QHBoxLayout()
         self.btn_auto_start = QtWidgets.QPushButton("▶ 开始自动对局")
         self.btn_auto_stop = QtWidgets.QPushButton("⏹ 停止")
-        self.btn_auto_start.setStyleSheet(_BTN_PRIMARY)
-        self.btn_auto_stop.setStyleSheet(_BTN_DANGER)
+        self.btn_auto_start.setProperty("variant", "primary")
+        self.btn_auto_stop.setProperty("variant", "danger")
         row2.addWidget(self.btn_auto_start)
         row2.addWidget(self.btn_auto_stop)
 
@@ -700,6 +505,14 @@ class MainWindow(QtWidgets.QMainWindow):
         temp_form.addRow("解说请求超时（秒）", self.commentator_timeout)
         temp_form.addRow("非法输出重答次数", self.decision_retries)
         temp_form.addRow(self.clamp_sizing)
+        self.four_color_deck = QtWidgets.QCheckBox("四色牌面")
+        self.show_equity = QtWidgets.QCheckBox("显示观众胜率（上帝视角）")
+        self.reduce_motion = QtWidgets.QCheckBox("减少动画")
+        self.four_color_deck.setChecked(True)
+        self.show_equity.setChecked(True)
+        temp_form.addRow(self.four_color_deck)
+        temp_form.addRow(self.show_equity)
+        temp_form.addRow(self.reduce_motion)
         self.chk_debug_log = QtWidgets.QCheckBox("开启 Debug 日志（写入 log/ 文件夹）")
         self.chk_debug_log.toggled.connect(lambda enabled: core.setup_logging(enabled, base_dir=os.path.dirname(__file__)))
         self.chk_debug_log.setToolTip("开启后会在 log/ 文件夹中记录所有 API 请求/响应、游戏状态变化等详细信息")
@@ -791,6 +604,9 @@ class MainWindow(QtWidgets.QMainWindow):
             except ValueError:
                 widget.setValue(default)
         self.clamp_sizing.setChecked(env.get("CLAMP_OUT_OF_RANGE", "true").lower() != "false")
+        self.four_color_deck.setChecked(env.get("FOUR_COLOR_DECK", "true").lower() != "false")
+        self.show_equity.setChecked(env.get("SHOW_EQUITY", "true").lower() != "false")
+        self.reduce_motion.setChecked(env.get("REDUCE_MOTION", "false").lower() == "true")
         for key, controls in self.provider_controls.items():
             controls.load(env, key)
         self.c_same.setChecked(env.get("COMMENTATOR_SAME_AS_A", "").lower() == "true")
@@ -850,6 +666,9 @@ class MainWindow(QtWidgets.QMainWindow):
         data["COMMENTATOR_TIMEOUT_S"] = str(self.commentator_timeout.value())
         data["MAX_DECISION_RETRIES"] = str(self.decision_retries.value())
         data["CLAMP_OUT_OF_RANGE"] = "true" if self.clamp_sizing.isChecked() else "false"
+        data["FOUR_COLOR_DECK"] = "true" if self.four_color_deck.isChecked() else "false"
+        data["SHOW_EQUITY"] = "true" if self.show_equity.isChecked() else "false"
+        data["REDUCE_MOTION"] = "true" if self.reduce_motion.isChecked() else "false"
         return data
 
     def on_save_env(self) -> None:
@@ -1040,16 +859,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_vm_changed(self, vm: AppViewModel) -> None:
         self.vm = vm
-        self.status.showMessage(vm.status_text + (f" | Auto: {vm.auto_state.paused_reason}" if vm.auto_state.paused_reason else ""))
+        self.status.showMessage(vm.status_text + (f" · 自动对局：{vm.auto_state.paused_reason}" if vm.auto_state.paused_reason else ""))
 
         # 刷新可视化牌桌
         self.board_panel.update_state(vm)
 
-        # 用自定义名称更新牌面标签
         na = vm.player_names.get("AI_A", "AI_A")
         nb = vm.player_names.get("AI_B", "AI_B")
-        self.lbl_a_cards.setText(f"{na} 底牌")
-        self.lbl_b_cards.setText(f"{nb} 底牌")
+        self.lbl_a_cards.setText("选手 A 底牌")
+        self.lbl_b_cards.setText("选手 B 底牌")
+        self.lbl_a_cards.setToolTip(na)
+        self.lbl_b_cards.setToolTip(nb)
 
         self._set_combo_by_code(self.a1, vm.hole_cards["AI_A"][0])
         self._set_combo_by_code(self.a2, vm.hole_cards["AI_A"][1])
@@ -1109,6 +929,7 @@ def main() -> None:
     log.info("应用启动 | debug_log=%s | python=%s | platform=%s", debug_enabled, sys.version.split()[0], sys.platform)
 
     app = QtWidgets.QApplication(sys.argv)
+    theme.apply(app)
     w = MainWindow()
     w.show()
     sys.exit(app.exec())

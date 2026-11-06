@@ -79,6 +79,17 @@ class AppViewModel:
     player_names: dict[PlayerID, str]
     contributed_street_cents: dict[PlayerID, int]
     model_stats: dict[str, dict[str, int]] = field(default_factory=dict)
+    model_names: dict[str, str] = field(default_factory=dict)
+    thinking_started: float = 0.0
+    last_trash_talk: dict[str, str] = field(default_factory=dict)
+    trash_talk_times: dict[str, float] = field(default_factory=dict)
+    last_analysis: dict[str, str] = field(default_factory=dict)
+    winner_hand_desc: str = ""
+    best_five: list[str] = field(default_factory=list)
+    pot_won_cents: int = 0
+    four_color_deck: bool = True
+    show_equity: bool = True
+    reduce_motion: bool = False
 
 
 @dataclass
@@ -159,6 +170,11 @@ class GameController(QtCore.QObject):
         self._decision_messages = []
         self._decision_retries = 0
         self._network_retries = 0
+        self.thinking_started = 0.0
+        self._trash_talk_times = {}
+        self.four_color_deck = True
+        self.show_equity = True
+        self.reduce_motion = False
         self.model_stats = {p: dict.fromkeys(("decisions", "invalid_outputs", "retries", "fallbacks", "clamps"), 0)
                             for p in ("AI_A", "AI_B")}
 
@@ -193,6 +209,9 @@ class GameController(QtCore.QObject):
             return None
 
     def load_env(self, env: dict[str, str]) -> None:
+        self.four_color_deck = env.get("FOUR_COLOR_DECK", "true").lower() != "false"
+        self.show_equity = env.get("SHOW_EQUITY", "true").lower() != "false"
+        self.reduce_motion = env.get("REDUCE_MOTION", "false").lower() == "true"
         self.max_decision_retries = max(0, int(env.get("MAX_DECISION_RETRIES", "2") or "2"))
         self.clamp_sizing = env.get("CLAMP_OUT_OF_RANGE", "true").lower() != "false"
         self.ai_timeout_s = int(env["AI_TIMEOUT_S"]) if env.get("AI_TIMEOUT_S", "").strip() else None
@@ -274,6 +293,7 @@ class GameController(QtCore.QObject):
         self.last_error = None
         self._clear_hand_memory()
         self._last_trash_talk = {"AI_A": "", "AI_B": ""}
+        self._trash_talk_times = {}
         self._last_analysis = {"AI_A": "", "AI_B": ""}
         self._match_stats = {"total_hands": 0, "wins": {"AI_A": 0, "AI_B": 0}}
         self._prev_commentary = ""
@@ -285,8 +305,8 @@ class GameController(QtCore.QObject):
         na = self._display_name("AI_A")
         nb = self._display_name("AI_B")
         self.logAppended.emit("--- \U0001f195 新比赛开始 ---")
-        self.logAppended.emit(f"Stack: ${core.dollars_from_cents(start_stack_cents)} | Blinds: ${core.dollars_from_cents(sb_cents)}/${core.dollars_from_cents(bb_cents)}")
-        self.logAppended.emit(f"--- \U0001f0cf Hand #{self.state.hand_id} | Button: {self._display_name(self.state.button)} ---")
+        self.logAppended.emit(f"初始筹码：${core.dollars_from_cents(start_stack_cents)} · 盲注：${core.dollars_from_cents(sb_cents)}/${core.dollars_from_cents(bb_cents)}")
+        self.logAppended.emit(f"第 {self.state.hand_id} 手 · 庄家：{self._display_name(self.state.button)}")
         self._emit_vm()
 
     def start_next_hand(self) -> None:
@@ -295,9 +315,10 @@ class GameController(QtCore.QObject):
         self.last_error = None
         self._clear_hand_memory()
         self._last_trash_talk = {"AI_A": "", "AI_B": ""}
+        self._trash_talk_times = {}
         self._last_analysis = {"AI_A": "", "AI_B": ""}
         self.state.start_hand()
-        self.logAppended.emit(f"--- \U0001f0cf Hand #{self.state.hand_id} | Button: {self._display_name(self.state.button)} ---")
+        self.logAppended.emit(f"第 {self.state.hand_id} 手 · 庄家：{self._display_name(self.state.button)}")
         self._emit_vm()
 
     def lock_cards_from_texts(
@@ -358,7 +379,7 @@ class GameController(QtCore.QObject):
             winner_name = self._display_name(self.state.winner)
             res = f"\U0001f451 摊牌结束! 主池赢家: {winner_name}"
         else:
-            res = "\U0001f91d 主池平局 (Split Main Pot)"
+            res = "主池平局"
         self.logAppended.emit(f"{res} (原因: {self.state.win_reason})")
         na = self._display_name("AI_A")
         nb = self._display_name("AI_B")
@@ -460,6 +481,7 @@ class GameController(QtCore.QObject):
         req_id = self.request_id
         self.active_request_id = req_id
         self.thinking = True
+        self.thinking_started = _time.monotonic()
         self.last_error = None
         self._emit_vm()
 
@@ -736,6 +758,7 @@ class GameController(QtCore.QObject):
 
             if decision.trash_talk:
                 self._last_trash_talk[pid] = decision.trash_talk
+                self._trash_talk_times[pid] = _time.monotonic()
                 self.logAppended.emit(f"🗣️ [{pname} 喊话]: \"{decision.trash_talk}\"")
 
             # 存入记忆（user 消息 + assistant 回复）
@@ -752,9 +775,10 @@ class GameController(QtCore.QObject):
             pot_before = self.state.pot_cents
 
             self.state.apply_action(player, decision.action, decision.to_cents)
-            action_line = f"\U0001f449 {pname} 决定: {decision.action.upper()}"
+            action_cn = {"fold": "弃牌", "check": "过牌", "call": "跟注", "bet": "下注", "raise": "加注"}[decision.action]
+            action_line = f"{pname} 决定：{action_cn}"
             if decision.to_cents is not None:
-                action_line += f" to ${core.dollars_from_cents(decision.to_cents)}"
+                action_line += f" 至 ${core.dollars_from_cents(decision.to_cents)}"
             self.logAppended.emit(action_line)
 
             if self.state.hand_over and self.state.win_reason == "fold":
@@ -1147,10 +1171,11 @@ class GameController(QtCore.QObject):
         nb = self._display_name("AI_B")
 
         if s.hand_over:
-            status = f"\U0001f3c1 本手结束 | Pot: $0.00 | {na}: ${core.dollars_from_cents(s.stacks_cents['AI_A'])} | {nb}: ${core.dollars_from_cents(s.stacks_cents['AI_B'])}"
+            status = f"本手结束 · {na}：${core.dollars_from_cents(s.stacks_cents['AI_A'])} · {nb}：${core.dollars_from_cents(s.stacks_cents['AI_B'])}"
         else:
-            next_name = self._display_name(next_to_act) if next_to_act else "(none)"
-            status = f"Pot: ${core.dollars_from_cents(s.pot_cents)} | Street: {s.street} | Next: {next_name}"
+            next_name = self._display_name(next_to_act) if next_to_act else "等待推进"
+            street_cn = {"preflop": "翻牌前", "flop": "翻牌", "turn": "转牌", "river": "河牌"}[s.street]
+            status = f"底池：${core.dollars_from_cents(s.pot_cents)}  ·  街：{street_cn}  ·  下一位：{next_name}"
 
         paused_reason = self._paused_reason if not self.auto_running else None
         auto_state = AutoState(
@@ -1184,5 +1209,21 @@ class GameController(QtCore.QObject):
                 "AI_B": self.state.contributed_street.get("AI_B", 0),
             },
             model_stats={p: dict(stats) for p, stats in self.model_stats.items()},
+            model_names={p: profile.model for p, profile in self.profile.items()},
+            thinking_started=self.thinking_started,
+            last_trash_talk=dict(self._last_trash_talk),
+            trash_talk_times=dict(self._trash_talk_times),
+            last_analysis=dict(self._last_analysis),
+            winner_hand_desc=(core.best_hand_desc([c for c in s.hole[s.winner] if c],
+                                                  [c for c in s.board if c])
+                              if s.winner and s.win_reason == "showdown" else ""),
+            best_five=([core.card_to_text(c) for c in core.best_five_cards(
+                [c for c in s.hole[s.winner] + s.board if c])]
+                       if s.winner and s.win_reason == "showdown" else []),
+            pot_won_cents=((sum(self.state.contributed_total.values()) if s.win_reason == "fold"
+                            else 2 * min(self.state.contributed_total.values())) if s.hand_over else 0),
+            four_color_deck=self.four_color_deck,
+            show_equity=self.show_equity,
+            reduce_motion=self.reduce_motion,
         )
         self.viewModelChanged.emit(vm)
