@@ -17,6 +17,7 @@ if sys.platform == "win32":
 from PySide6 import QtCore, QtGui, QtWidgets
 
 import core
+from settings_widgets import ModelCombo, TemperatureInput, ProviderControls
 from controller import AppViewModel, GameController, PlayerID
 
 log = logging.getLogger("poker.ui")
@@ -230,6 +231,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._load_env_to_ui()
         self.controller.load_env(core.load_dotenv(ENV_PATH))
         self.on_new_match()
+        self._update_config_hint(jump=True)
 
     # ═══════════════════════════ UI 构建 ═══════════════════════════
 
@@ -243,6 +245,7 @@ class MainWindow(QtWidgets.QMainWindow):
         left_layout.setContentsMargins(8, 8, 8, 8)
 
         tabs = QtWidgets.QTabWidget()
+        self.tabs = tabs
         left_layout.addWidget(tabs, 1)
 
         self.tab_game = QtWidgets.QWidget()
@@ -303,6 +306,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_game_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.tab_game)
+        self.config_banner = QtWidgets.QWidget()
+        banner_layout = QtWidgets.QVBoxLayout(self.config_banner)
+        banner_layout.addWidget(QtWidgets.QLabel("尚未配置 AI 选手，请先在设置页填写并测试连接"))
+        jump = QtWidgets.QPushButton("前往设置")
+        jump.clicked.connect(lambda: self.tabs.setCurrentWidget(self.tab_settings))
+        banner_layout.addWidget(jump)
+        layout.addWidget(self.config_banner)
 
         _HINT = "color:#888; font:11px;"
         _BTN_PRIMARY = (
@@ -559,7 +569,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_base = QtWidgets.QLineEdit()
         self.a_key = QtWidgets.QLineEdit()
         self.a_key.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
-        self.a_model = QtWidgets.QLineEdit()
+        self.a_model = ModelCombo()
         self.a_thinking = QtWidgets.QCheckBox("开启深度思考 (thinking)")
         self.a_thinking_budget = QtWidgets.QSpinBox()
         self.a_thinking_budget.setRange(1000, 100000)
@@ -567,8 +577,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_thinking_budget.setValue(8000)
         self.a_memory = QtWidgets.QCheckBox("启用本手牌记忆")
         self.a_memory.setChecked(True)
-        self.a_temp = QtWidgets.QLineEdit()
-        self.a_temp.setPlaceholderText("留空=用全局温度，none=不发送")
+        self.a_temp = TemperatureInput()
         a_form.addRow("名称", self.a_name)
         a_form.addRow("Base URL", self.a_base)
         a_form.addRow("API Key", self.a_key)
@@ -586,7 +595,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_base = QtWidgets.QLineEdit()
         self.b_key = QtWidgets.QLineEdit()
         self.b_key.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
-        self.b_model = QtWidgets.QLineEdit()
+        self.b_model = ModelCombo()
         self.b_thinking = QtWidgets.QCheckBox("开启深度思考 (thinking)")
         self.b_thinking_budget = QtWidgets.QSpinBox()
         self.b_thinking_budget.setRange(1000, 100000)
@@ -594,8 +603,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_thinking_budget.setValue(8000)
         self.b_memory = QtWidgets.QCheckBox("启用本手牌记忆")
         self.b_memory.setChecked(True)
-        self.b_temp = QtWidgets.QLineEdit()
-        self.b_temp.setPlaceholderText("留空=用全局温度，none=不发送")
+        self.b_temp = TemperatureInput()
         b_form.addRow("名称", self.b_name)
         b_form.addRow("Base URL", self.b_base)
         b_form.addRow("API Key", self.b_key)
@@ -611,7 +619,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.c_base = QtWidgets.QLineEdit()
         self.c_key = QtWidgets.QLineEdit()
         self.c_key.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
-        self.c_model = QtWidgets.QLineEdit()
+        self.c_model = ModelCombo()
         self.c_temp = QtWidgets.QDoubleSpinBox()
         self.c_temp.setRange(0.0, 2.0)
         self.c_temp.setSingleStep(0.1)
@@ -651,7 +659,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.temp.setDecimals(2)
         self.temp.setValue(0.2)
         temp_form.addRow("Temperature", self.temp)
-        self.chk_debug_log = QtWidgets.QCheckBox("开启 Debug 日志（写入 log/ 文件夹，重启生效）")
+        self.chk_debug_log = QtWidgets.QCheckBox("开启 Debug 日志（写入 log/ 文件夹）")
+        self.chk_debug_log.toggled.connect(lambda enabled: core.setup_logging(enabled, base_dir=os.path.dirname(__file__)))
         self.chk_debug_log.setToolTip("开启后会在 log/ 文件夹中记录所有 API 请求/响应、游戏状态变化等详细信息")
         temp_form.addRow(self.chk_debug_log)
 
@@ -659,6 +668,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_save_env.clicked.connect(self.on_save_env)
 
         layout.addWidget(a_box)
+        self.provider_controls = {
+            "A": ProviderControls(self, "a", a_form, True),
+            "B": ProviderControls(self, "b", b_form, True),
+            "COMMENTATOR": ProviderControls(self, "c", c_form),
+        }
+        self.c_same = QtWidgets.QCheckBox("解说员与 AI_A 相同")
+        c_form.insertRow(0, self.c_same)
+        self.c_same.toggled.connect(self._sync_commentator)
+        for widget in (self.a_base, self.a_key):
+            widget.textChanged.connect(self._sync_commentator)
+        self.a_model.currentTextChanged.connect(self._sync_commentator)
+        self.provider_controls["A"].provider.currentTextChanged.connect(self._sync_commentator)
         layout.addWidget(b_box)
         layout.addWidget(c_box)
         layout.addWidget(temp_box)
@@ -721,6 +742,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.temp.setValue(0.2)
 
         self.chk_debug_log.setChecked(env.get("DEBUG_LOG_ENABLED", "").strip().lower() == "true")
+        for key, controls in self.provider_controls.items():
+            controls.load(env, key)
+        self.c_same.setChecked(env.get("COMMENTATOR_SAME_AS_A", "").lower() == "true")
+        self._sync_commentator()
 
         try:
             self.stack_input.setValue(float(env.get("DEFAULT_STACK", "1000") or "1000"))
@@ -736,7 +761,7 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
 
     def _collect_env_data(self) -> dict[str, str]:
-        return {
+        data = {
             "A_NAME": self.a_name.text().strip() or "AI_A",
             "A_BASE_URL": self.a_base.text().strip(),
             "A_API_KEY": self.a_key.text().strip(),
@@ -769,6 +794,10 @@ class MainWindow(QtWidgets.QMainWindow):
             "COMMENTATOR_GOD_VIEW": "true" if self.c_god_view.isChecked() else "false",
             "DEBUG_LOG_ENABLED": "true" if self.chk_debug_log.isChecked() else "false",
         }
+        for key, controls in self.provider_controls.items():
+            data.update(controls.collect(key))
+        data["COMMENTATOR_SAME_AS_A"] = "true" if self.c_same.isChecked() else "false"
+        return data
 
     def on_save_env(self) -> None:
         log.info("[UI] 点击: 保存配置到 .env")
@@ -776,7 +805,38 @@ class MainWindow(QtWidgets.QMainWindow):
         core.save_dotenv(ENV_PATH, data)
         self.controller.load_env(data)
         log.info("[UI] 配置已保存 (%d 项)", len(data))
-        QtWidgets.QMessageBox.information(self, "成功", "配置已保存至 .env")
+        self.statusBar().showMessage("配置已保存至 .env", 5000)
+        self._update_config_hint()
+
+    def _sync_commentator(self, *_args) -> None:
+        same = self.c_same.isChecked()
+        for name in ("base", "key", "model"):
+            widget = getattr(self, "c_" + name)
+            if same:
+                widget.setText(getattr(self, "a_" + name).text())
+            widget.setEnabled(not same)
+        controls = self.provider_controls["COMMENTATOR"]
+        if same:
+            controls.provider.blockSignals(True)
+            controls.provider.setCurrentText(self.provider_controls["A"].provider.currentText())
+            controls.provider.blockSignals(False)
+        controls.provider.setEnabled(not same)
+        controls.fetch.setEnabled(not same)
+
+    def closeEvent(self, event) -> None:
+        if any(controls.jobs for controls in self.provider_controls.values()):
+            self.statusBar().showMessage("连接请求进行中，请稍后关闭窗口", 3000)
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def _update_config_hint(self, jump=False) -> bool:
+        configured = all(p.base_url.strip() and p.api_key.strip() and p.model.strip()
+                         for p in self.controller.profile.values())
+        self.config_banner.setVisible(not configured)
+        if not configured and jump:
+            self.tabs.setCurrentWidget(self.tab_settings)
+        return bool(configured)
 
     # ═══════════════════════════ 对局操作 ═══════════════════════════
 
@@ -865,6 +925,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.on_error(str(e))
 
     def on_auto_start(self) -> None:
+        if not self._update_config_hint():
+            self.statusBar().showMessage("尚未配置 AI 选手，请先在设置页填写并测试连接", 8000)
+            return
         log.info("[UI] 点击: 开始自动对局 | auto_fill=%s | auto_advance=%s | delay=%dms",
                  self.chk_auto_fill.isChecked(), self.chk_auto_advance.isChecked(), self.delay_ms.value())
         self.controller.set_auto_options(self.chk_auto_fill.isChecked(), self.chk_auto_advance.isChecked())

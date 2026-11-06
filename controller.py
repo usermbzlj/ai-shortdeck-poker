@@ -9,6 +9,7 @@ from PySide6 import QtCore
 
 import core
 import prompts
+import providers
 
 log = logging.getLogger("poker.ctrl")
 
@@ -77,6 +78,8 @@ class AppViewModel:
 
 @dataclass
 class LLMProfile:
+    thinking_param: bool = True
+    persona: str = ""
     base_url: str = ""
     api_key: str = ""
     model: str = ""
@@ -89,6 +92,7 @@ class LLMProfile:
 
 @dataclass
 class CommentatorProfile:
+    thinking_param: bool = True
     base_url: str = ""
     api_key: str = ""
     model: str = ""
@@ -175,6 +179,11 @@ class GameController(QtCore.QObject):
             return None
 
     def load_env(self, env: dict[str, str]) -> None:
+        if env.get("COMMENTATOR_SAME_AS_A", "").lower() == "true":
+            env = dict(env)
+            for suffix in ("BASE_URL", "API_KEY", "MODEL", "PROVIDER"):
+                env["COMMENTATOR_" + suffix] = env.get("A_" + suffix, "")
+            env["COMMENTATOR_PROVIDER"] = env.get("A_PROVIDER") or providers.infer_provider(env.get("A_BASE_URL", ""))
         log.info("load_env: 加载配置 (%d 项)", len(env))
         global_temp = env.get("TEMPERATURE", "").strip()
 
@@ -187,6 +196,8 @@ class GameController(QtCore.QObject):
             return self._parse_temp(default)
 
         self.profile["AI_A"] = LLMProfile(
+            thinking_param=providers.sends_thinking(env.get("A_THINKING_PARAM", "auto"), env.get("A_PROVIDER", providers.infer_provider(env.get("A_BASE_URL", "")))),
+            persona=env.get("A_PERSONA", prompts.A_EXTRA_INSTRUCTIONS),
             base_url=env.get("A_BASE_URL", ""),
             api_key=env.get("A_API_KEY", ""),
             model=env.get("A_MODEL", ""),
@@ -197,6 +208,8 @@ class GameController(QtCore.QObject):
             memory_enabled=env.get("A_MEMORY_ENABLED", "true").lower() != "false",
         )
         self.profile["AI_B"] = LLMProfile(
+            thinking_param=providers.sends_thinking(env.get("B_THINKING_PARAM", "auto"), env.get("B_PROVIDER", providers.infer_provider(env.get("B_BASE_URL", "")))),
+            persona=env.get("B_PERSONA", prompts.B_EXTRA_INSTRUCTIONS),
             base_url=env.get("B_BASE_URL", ""),
             api_key=env.get("B_API_KEY", ""),
             model=env.get("B_MODEL", ""),
@@ -207,6 +220,7 @@ class GameController(QtCore.QObject):
             memory_enabled=env.get("B_MEMORY_ENABLED", "true").lower() != "false",
         )
         self.commentator = CommentatorProfile(
+            thinking_param=providers.sends_thinking(env.get("COMMENTATOR_THINKING_PARAM", "auto"), env.get("COMMENTATOR_PROVIDER", providers.infer_provider(env.get("COMMENTATOR_BASE_URL", "")))),
             base_url=env.get("COMMENTATOR_BASE_URL", ""),
             api_key=env.get("COMMENTATOR_API_KEY", ""),
             model=env.get("COMMENTATOR_MODEL", ""),
@@ -448,6 +462,7 @@ class GameController(QtCore.QObject):
                     temperature=temperature,
                     thinking_enabled=thinking_enabled,
                     thinking_budget=thinking_budget,
+                    thinking_param=prof.thinking_param,
                 )
             except Exception as e:
                 log.error("AI 请求异常 | req_id=%d | player=%s | %.2fs | %s", req_id, p, _time.monotonic() - start, e)
@@ -480,6 +495,8 @@ class GameController(QtCore.QObject):
         # ── System（仅身份占位符，无动态局面） ──
         raw_system = prompts.A_SYSTEM if player == "AI_A" else prompts.B_SYSTEM
         system = _safe_format(raw_system, {"player": pname, "opponent": oname})
+        if self.profile[player].persona.strip():
+            system += "\n\n═══ 你的风格 ═══\n" + self.profile[player].persona.strip()
 
         # ── User 消息：按「信息 → 历史 → 约束 → 要求」分组 ──
         actions = legal.get("actions", [])
@@ -793,7 +810,8 @@ class GameController(QtCore.QObject):
         def worker():
             try:
                 result = client.chat(messages=messages, temperature=temp,
-                                     thinking_enabled=t_enabled, thinking_budget=t_budget)
+                                     thinking_enabled=t_enabled, thinking_budget=t_budget,
+                                     thinking_param=prof.thinking_param)
                 content = (result.get("content") or "").strip()
                 if content:
                     self._reactionResult.emit(label, content)
@@ -908,7 +926,8 @@ class GameController(QtCore.QObject):
             start = _time.monotonic()
             try:
                 result = client.chat(messages=messages, temperature=temp,
-                                     thinking_enabled=t_enabled, thinking_budget=t_budget)
+                                     thinking_enabled=t_enabled, thinking_budget=t_budget,
+                                     thinking_param=c.thinking_param)
                 text = (result.get("content") or "").strip()
                 log.info("解说员响应 | %.2fs | len=%d", _time.monotonic() - start, len(text))
                 log.debug("解说员内容: %s", text[:2000])

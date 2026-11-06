@@ -23,6 +23,8 @@ def _mask_key(key: str) -> str:
 def setup_logging(enabled: bool, base_dir: str | None = None) -> None:
     """初始化 debug 日志。enabled=False 时仅保留 WARNING 以上级别。"""
     logger = logging.getLogger("poker")
+    for old_handler in logger.handlers:
+        old_handler.close()
     logger.handlers.clear()
     logger.propagate = False
 
@@ -310,6 +312,7 @@ class LLMClient:
         temperature: float | None = None,
         thinking_enabled: bool = False,
         thinking_budget: int = 8000,
+        thinking_param: bool = True,
     ) -> dict:
         """返回 {"content": str, "reasoning_content": str|None}"""
         if not self.base_url or not self.api_key or not self.model:
@@ -321,9 +324,9 @@ class LLMClient:
         }
         if temperature is not None:
             payload["temperature"] = temperature
-        if thinking_enabled:
+        if thinking_param and thinking_enabled:
             payload["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
-        else:
+        elif thinking_param:
             payload["thinking"] = {"type": "disabled"}
         log.debug(
             "LLM 请求准备 | model=%s | base=%s | key=%s | temp=%s | thinking=%s",
@@ -881,14 +884,22 @@ def load_dotenv(path: str) -> dict[str, str]:
         if not s or s.startswith("#") or "=" not in s:
             continue
         k, v = s.split("=", 1)
-        data[k.strip()] = v.strip().strip('"').strip("'")
+        value = v.strip()
+        if k.strip().endswith('_PERSONA') and value.startswith('"'):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                value = value.strip('"').strip("'")
+        else:
+            value = value.strip('"').strip("'")
+        data[k.strip()] = value
     safe = {k: (_mask_key(v) if "KEY" in k.upper() else v) for k, v in data.items()}
     log.debug("load_dotenv: 加载 %d 项配置: %s", len(data), safe)
     return data
 
 
 def save_dotenv(path: str, data: dict[str, str]) -> None:
-    lines = [f"{k}={data[k]}" for k in sorted(data.keys())]
+    lines = [f"{k}=" + (json.dumps(data[k], ensure_ascii=False) if k.endswith('_PERSONA') else data[k])
+             for k in sorted(data.keys())]
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
-
