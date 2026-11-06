@@ -4,7 +4,21 @@ from history_store import without_secrets
 import core
 
 
+def revealed_boards(value):
+    if isinstance(value, list):
+        return [revealed_boards(item) for item in value]
+    if isinstance(value, dict):
+        result = {key: revealed_boards(item) for key, item in value.items()}
+        if "board" in result and "street" in result:
+            count = 5 if result.get("reason") == "showdown" else {
+                "preflop": 0, "flop": 3, "turn": 4, "river": 5}[result["street"]]
+            result["board"] = result["board"][:count]
+        return result
+    return value
+
+
 def pokerstars(hand):
+    hand = revealed_boards(hand)
     names = {p: " ".join(n.splitlines()) for p, n in hand["names"].items()}
     seats = hand["seats"]
     sb, bb = hand["blinds"]["sb"], hand["blinds"]["bb"]
@@ -67,4 +81,4 @@ def export_text(hands):
 
 
 def export_json(hands):
-    return json.dumps(dict(version=1, game="short_deck", hands=without_secrets(hands)), ensure_ascii=False, indent=2)
+    return json.dumps(dict(version=1, game="short_deck", hands=without_secrets(revealed_boards(hands))), ensure_ascii=False, indent=2)

@@ -8,12 +8,12 @@ import core
 import theme
 from analytics import TAG_LABELS
 from controller import ActionAvailability, AppViewModel, AutoState
-from history_export import export_json, export_text
+from history_export import export_json, export_text, revealed_boards
 from table_widget import PokerTableWidget
 
 
 def frame_vm(hand, index):
-    frame = hand["frames"][index]
+    frame = revealed_boards(hand["frames"][index])
     winner = frame.get("winner")
     best = []
     description = ""

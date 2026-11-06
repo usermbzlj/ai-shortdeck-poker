@@ -113,6 +113,37 @@ Short deck: 36 cards, flush beats full house, A6789 is a straight.
         self.assertEqual("-$59.00", core.format_money(-5900))
         self.assertEqual("$0.01", core.format_money(1))
 
+    def test_exports_mask_locked_board_beyond_reached_street(self):
+        locked = ["6h", "7d", "8s", "9c", "Tc"]
+        for street, count in (("preflop", 0), ("flop", 3), ("turn", 4), ("river", 5)):
+            with self.subTest(street=street):
+                c = self.c
+                c.start_new_match(10000, 50, 100)
+                c.state.lock_cards([core.parse_card("Ah"), core.parse_card("Ad")],
+                                   [core.parse_card("Kh"), core.parse_card("Kd")],
+                                   [core.parse_card(card) for card in locked])
+                if street != "preflop":
+                    c.execute_action("call", None)
+                    c.execute_action("check", None)
+                    while c.state.street != street:
+                        c.advance_street()
+                        if c.state.street != street:
+                            c.execute_action("check", None)
+                            c.execute_action("check", None)
+                    c.execute_action("bet", 100)
+                c.execute_action("fold", None)
+                hand = self.store.get_hand(c.match_id, c.state.hand_id)
+                self.assertEqual(f'Board [{" ".join(locked[:count])}]', pokerstars(hand).splitlines()[-2])
+                exported = json.loads(export_json([hand]))["hands"][0]
+                self.assertEqual(locked[:count], [card for card in exported["board"] if card])
+                for frame in exported["frames"]:
+                    reached = {"preflop":0, "flop":3, "turn":4, "river":5}[frame["street"]]
+                    self.assertFalse(any(frame["board"][reached:]))
+                self.assertEqual(locked[:count], [card for card in frame_vm(hand,-1).board_cards if card])
+                with patch("review_widgets.PokerTableWidget.update_state") as update:
+                    share_image(hand, Path(self.temp.name)/"masked.png")
+                self.assertEqual(locked[:count], [card for card in update.call_args.args[0].board_cards if card])
+
     def test_tags_and_allin_ev_math_and_cached_equity(self):
         hand = self.finished()
         hand.update(hole={"AI_A":["Ah","Kd"], "AI_B":["Qs","Jc"]}, board=[], street="preflop")
