@@ -48,6 +48,8 @@ class HandTrace:
         paid = max(0, before["stacks"][player] - state.stacks[player])
         decision = before.get("decision")
         entry = dict(player=player, street=before["street"], action=action, paid_cents=paid,
+                     hole=before["hole"],
+                     board=before["board"][:{"preflop": 0, "flop": 3, "turn": 4, "river": 5}[before["street"]]],
                      to_cents=target, legal_actions=before["legal_actions"], pot_before=before["pot_cents"],
                      all_in=state.stacks[player] == 0, decision=deepcopy(decision))
         self.record["actions"].append(entry)

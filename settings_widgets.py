@@ -4,6 +4,7 @@ import httpx
 from PySide6 import QtCore, QtWidgets
 
 import core
+import humans
 import bots
 from providers import PROVIDERS, PERSONAS, infer_provider, sends_thinking
 
@@ -102,7 +103,7 @@ class ProviderControls(QtCore.QObject):
         self.prefix = prefix
         self.jobs = []
         self.provider = QtWidgets.QComboBox()
-        self.provider.addItems([name for name in PROVIDERS if player or name != "内置机器人"])
+        self.provider.addItems([name for name in PROVIDERS if player or name not in ("内置机器人", humans.PROVIDER)])
         self.provider.setCurrentText("自定义")
         form.insertRow(0, "厂商", self.provider)
         self.param = QtWidgets.QComboBox()
@@ -153,16 +154,27 @@ class ProviderControls(QtCore.QObject):
             self.widget("base").setText(preset.base_url)
         else:
             model.setText(previous)
+        if name == humans.PROVIDER:
+            self.widget("key").clear()
         self.local_fields()
 
     def local_fields(self):
-        local = self.provider.currentText() == "内置机器人"
+        human = self.provider.currentText() == humans.PROVIDER
+        local = human or self.provider.currentText() == "内置机器人"
         self.widget("model").setEditable(not local)
-        self.widget("key").setPlaceholderText("内置机器人无需 API Key" if local else "")
+        self.widget("key").setPlaceholderText("真人无需 API Key" if human else "内置机器人无需 API Key" if local else "")
+        self.fetch.setEnabled(not local)
+        self.test.setEnabled(not local)
         for name in ("base", "key", "thinking"):
             self.widget(name).setEnabled(not local)
         if local:
             self.widget("thinking").setChecked(False)
+        if hasattr(self.window, "provider_controls"):
+            controls = self.window.provider_controls
+            for seat, other in (("A", "B"), ("B", "A")):
+                combo = controls[seat].provider
+                item = combo.model().item(combo.findText(humans.PROVIDER))
+                item.setEnabled(controls[other].provider.currentText() != humans.PROVIDER)
 
     def load(self, env, key):
         name = env.get(key + "_PROVIDER", infer_provider(env.get(key + "_BASE_URL", "")))
@@ -187,6 +199,9 @@ class ProviderControls(QtCore.QObject):
         return data
 
     def probe(self, models):
+        if self.provider.currentText() in ("内置机器人", humans.PROVIDER):
+            self.result.setText("本地座位无需网络连接。")
+            return
         temp = self.widget("temp")
         raw = temp.text() if isinstance(temp, TemperatureInput) else str(temp.value())
         temperature = self.window.temp.value() if not raw else None if raw == "none" else float(raw)

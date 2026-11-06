@@ -25,9 +25,13 @@ def tags_for_hand(hand):
     actions = hand.get("actions", [])
     if winner:
         rank = category(hand, winner)
-        if hand.get("reason") == "fold" and rank == 0 and any(
-                a["player"] == winner and a["action"] in ("bet", "raise") for a in actions):
-            tags.append("bluff")
+        if hand.get("reason") == "fold" and len(actions) >= 2:
+            bet = actions[-2]
+            if bet["player"] == winner and bet["action"] in ("bet", "raise") and bet["street"] != "preflop":
+                at_bet = dict(hand, street=bet["street"], board=bet.get("board", hand.get("board", [])),
+                              hole=bet.get("hole", hand.get("hole", {})))
+                if category(at_bet, winner) == 0:
+                    tags.append("bluff")
         if hand.get("reason") == "showdown" and rank is not None and rank <= 1 and any(
                 a["player"] == winner and a["street"] == "river" and a["action"] == "call" and a.get("paid_cents", 0) > 0 for a in actions):
             tags.append("hero_call")

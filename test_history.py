@@ -116,7 +116,7 @@ Short deck: 36 cards, flush beats full house, A6789 is a straight.
     def test_tags_and_allin_ev_math_and_cached_equity(self):
         hand = self.finished()
         hand.update(hole={"AI_A":["Ah","Kd"], "AI_B":["Qs","Jc"]}, board=[], street="preflop")
-        self.assertEqual(["bluff"], tags_for_hand(hand))
+        self.assertEqual([], tags_for_hand(hand))
         hand.update(street="river", board=["6h","8d","Tc","Qs","Ac"],
                     hole={"AI_A":["Ah","Kd"], "AI_B":["7s","9c"]},
                     winner="AI_A", reason="showdown", pot_cents=2000,

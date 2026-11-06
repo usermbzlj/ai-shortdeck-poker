@@ -4,6 +4,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 import core
 import theme
+import humans
+from human_widgets import HumanDock
 from table_widget import PokerTableWidget
 from match_widgets import FormatControls, SummaryDialog, player_page
 from stats_widgets import StatsPanel
@@ -292,7 +294,7 @@ class SettingsDialog(QtWidgets.QDialog):
     def save(self):
         try:
             self.w.on_save_env()
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, core.UserFacingError) as error:
             self.w.on_error(str(error))
             return
         self.accept()
@@ -418,11 +420,22 @@ class AppShell(QtCore.QObject):
         old_scroll = self.drawer.layout().takeAt(0).widget()
         old_scroll.hide()
         self.drawer.layout().addWidget(director_scroll)
+        self.god_view = QtWidgets.QCheckBox("上帝视角 · 显示双方底牌与推理")
+        self.god_view.setToolTip("人机对战默认隐藏对手信息；开启后不再保证公平视角。")
+        self.god_view.toggled.connect(w.controller.set_god_view)
+        self.drawer.layout().insertWidget(0, self.god_view)
         self.drawer.setMinimumWidth(290)
         self.drawer.setMaximumWidth(400)
         self.splitter.addWidget(self.drawer)
         self.stage = QtWidgets.QStackedWidget()
-        self.stage.addWidget(w.board_panel)
+        game = QtWidgets.QWidget()
+        game_layout = QtWidgets.QVBoxLayout(game)
+        game_layout.setContentsMargins(0, 0, 0, 0)
+        game_layout.setSpacing(6)
+        game_layout.addWidget(w.board_panel, 1)
+        self.human_dock = HumanDock(w)
+        game_layout.addWidget(self.human_dock)
+        self.stage.addWidget(game)
         self.empty = QtWidgets.QWidget()
         empty_stack = QtWidgets.QStackedLayout(self.empty)
         empty_stack.setStackingMode(QtWidgets.QStackedLayout.StackingMode.StackAll)
@@ -447,8 +460,8 @@ class AppShell(QtCore.QObject):
         mark.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(mark)
         for text, role in (("欢迎来到短牌竞技场", "pageTitle"),
-                           ("让两位 AI 选手，展开一场有性格的对决", "eventTitle"),
-                           ("先为选手 A 与 B 选择模型并测试连接。\n配置只需一次，随后即可坐下来观赛。", "hint")):
+                           ("看两位 AI 对决，或亲自坐上牌桌", "eventTitle"),
+                           ("选择模型观赛，或挑战离线机器人。\n无需密钥，也能立即体验。", "hint")):
             label = QtWidgets.QLabel(text)
             label.setObjectName(role)
             label.setProperty("role", role)
@@ -458,6 +471,7 @@ class AppShell(QtCore.QObject):
         card_layout.addSpacing(15)
         card_layout.addWidget(button("去配置", self.show_settings, "settings", "primary"))
         card_layout.addWidget(button("先看一场演示", self.start_demo, "play"))
+        card_layout.addWidget(button("我来挑战 AI", self.challenge, variant="secondary"))
         empty_layout.addWidget(card, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
         empty_layout.addStretch()
         self.stage.addWidget(self.empty)
@@ -528,6 +542,17 @@ class AppShell(QtCore.QObject):
         self.w.timer.start()
         self.w.controller.auto_tick()
 
+    def challenge(self):
+        self.dialog.show_settings()
+        if self.w.provider_controls["B"].provider.currentText() == humans.PROVIDER:
+            self.dialog.nav.setCurrentRow(1)
+            return
+        self.dialog.nav.setCurrentRow(0)
+        self.w.provider_controls["A"].provider.setCurrentText(humans.PROVIDER)
+        other = self.w.provider_controls["B"]
+        if not (self.w.b_base.text().strip() and self.w.b_model.text().strip()):
+            other.provider.setCurrentText("内置机器人")
+
     def level_notice(self, text):
         w = self.w
         w.error_bar.setProperty("tone", "info")
@@ -544,7 +569,7 @@ class AppShell(QtCore.QObject):
             b.setChecked(b.text() == mode)
         director = mode == "导演"
         self.drawer.setVisible(director)
-        self.sidebar_tabs.setTabVisible(self.raw_index, director)
+        self.sidebar_tabs.setTabVisible(self.raw_index, director and not self.w.controller.privacy_active)
         if not director:
             self.sidebar_tabs.setCurrentIndex(0)
 
@@ -601,6 +626,20 @@ class AppShell(QtCore.QObject):
         return super().eventFilter(obj, event)
 
     def update_state(self, vm):
+        self.human_dock.update_state(vm)
+        self.god_view.blockSignals(True)
+        self.god_view.setChecked(self.w.controller.god_view_override)
+        self.god_view.blockSignals(False)
+        director = self.mode.currentText() == "导演"
+        self.sidebar_tabs.setTabVisible(self.raw_index, director and not vm.privacy_active)
+        if vm.privacy_active:
+            self.w.log.clear()
+            events = [e for e in self.timeline.events if not (
+                e.get("hand_id") == vm.hand_id and e.get("match_id") == getattr(self.w.controller, "match_id", None) and
+                (e.get("private") or e["type"] == "reasoning" and e.get("player") != vm.human_player))]
+            if len(events) != len(self.timeline.events):
+                self.timeline.events = events
+                self.timeline.set_filter(self.timeline.filter_name)
         a, b = (html.escape(vm.player_names[p]) for p in ("AI_A", "AI_B"))
         self.avatar_a.setPixmap(avatar(vm.player_names["AI_A"], theme.PLAYER_A))
         self.avatar_b.setPixmap(avatar(vm.player_names["AI_B"], theme.PLAYER_B))
@@ -666,14 +705,31 @@ class AppShell(QtCore.QObject):
         bindings = [("F", w.btn_fold), ("C", None), ("R", w.btn_raise), ("A", w.btn_allin)]
         for key, btn in bindings:
             shortcut = QtGui.QShortcut(QtGui.QKeySequence(key), w)
-            shortcut.activated.connect(lambda b=btn: self.manual_shortcut(b))
+            shortcut.activated.connect(lambda b=btn, k=key: self.action_shortcut(k, b))
             if btn:
                 btn.setToolTip(btn.toolTip() + " · " + key)
         for btn in (w.btn_check, w.btn_call):
             btn.setToolTip(btn.toolTip() + " · C")
         for key, callback in (("Space", self.toggle), ("N", self.single_step)):
             shortcut = QtGui.QShortcut(QtGui.QKeySequence(key), w)
-            shortcut.activated.connect(callback)
+            shortcut.activated.connect(lambda cb=callback: self.transport_shortcut(cb))
+
+    @staticmethod
+    def editing():
+        return isinstance(QtWidgets.QApplication.focusWidget(),
+                          (QtWidgets.QLineEdit, QtWidgets.QPlainTextEdit, QtWidgets.QTextEdit, QtWidgets.QAbstractSpinBox))
+
+    def action_shortcut(self, key, button):
+        if self.editing():
+            return
+        if self.w.vm and self.w.vm.human_player:
+            self.human_dock.shortcut(key)
+        else:
+            self.manual_shortcut(button)
+
+    def transport_shortcut(self, callback):
+        if not self.editing():
+            callback()
 
     def manual_shortcut(self, btn):
         if self.mode.currentText() != "导演":

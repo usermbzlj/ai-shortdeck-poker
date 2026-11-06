@@ -282,17 +282,20 @@ class PokerTableWidget(QtWidgets.QWidget):
         self._text(p, (745, 340, 160, 26), "6+ 短牌", 14, "#8bb9aa", True)
         self._draw_equity(p)
         seats = ("AI_B", "AI_A") if vm.seats_swapped else ("AI_A", "AI_B")
+        if vm.human_player:
+            opponent = "AI_B" if vm.human_player == "AI_A" else "AI_A"
+            seats = (opponent, vm.human_player)
         for pid, y in zip(seats, (69, 610)):
             self._seat(p, pid, y)
         if self._old_bets and self._progress < 1:
             for pid, amount in self._old_bets.items():
                 if amount:
-                    start_y = 222 if pid == "AI_A" else 513
+                    start_y = 222 if pid == seats[0] else 513
                     self._chip(p, 665 + (426 - 665) * self._progress,
                                start_y + (288 - start_y) * self._progress,
                                theme.PLAYER_A if pid == "AI_A" else theme.PLAYER_B)
         if self._pot_slide and self._progress < 1:
-            target = 115 if vm.winner == "AI_A" else 620
+            target = 115 if vm.winner == seats[0] else 620
             self._chip(p, 500, 285 + (target - 285) * self._progress, theme.GOLD, 1.3)
         if vm.hand_over:
             if vm.winner:
@@ -304,7 +307,8 @@ class PokerTableWidget(QtWidgets.QWidget):
             self._round(p, (245, 262, 510, 48), "#111c24f5", 12, "#d9b65b", 1.2)
             self._text(p, (260, 264, 480, 25), title, 20, theme.GOLD, True)
             self._text(p, (260, 290, 480, 16), detail, 11, "#c2b493")
-        self._text(p, (30, 718, 940, 20), "上帝视角 · 双方底牌仅对观众可见     /     同花大于葫芦 · A6789 为顺子", 11, theme.MUTED)
+        view = "公平视角 · 对手底牌仅在摊牌揭晓" if vm.human_player and not vm.god_view else "上帝视角 · 双方底牌可见"
+        self._text(p, (30, 718, 940, 20), view + "     /     同花大于葫芦 · A6789 为顺子", 11, theme.MUTED)
 
     def _draw_equity(self, p):
         if not self.vm.show_equity:
@@ -359,7 +363,7 @@ class PokerTableWidget(QtWidgets.QWidget):
         self._text(p, (540, y + 15, 155, 30), "$" + core.dollars_from_cents(vm.stacks_cents.get(pid, 0)), 23,
                    theme.GOLD if winner else theme.TEXT, True, mono=True, align=QtCore.Qt.AlignmentFlag.AlignRight)
         elapsed = max(0, time.monotonic() - vm.thinking_started) if vm.thinking_started else 0
-        status = f"思考中 {elapsed:.1f}s" if thinking else "本手获胜" if winner else "轮到行动" if active else "等待行动"
+        status = f"思考中 {elapsed:.1f}s" if thinking else "本手获胜" if winner else "你的回合 · 不限时" if active and pid == vm.human_player else "轮到行动" if active else "等待行动"
         self._text(p, (540, y + 48, 155, 20), status, 11, theme.GOLD if winner else color if active else theme.MUTED,
                    align=QtCore.Qt.AlignmentFlag.AlignRight)
         if vm.button == pid:

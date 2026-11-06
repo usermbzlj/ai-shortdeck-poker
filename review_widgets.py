@@ -274,7 +274,7 @@ class HistoryWindow(QtWidgets.QDialog):
                     item.setForeground(QtGui.QColor(theme.GOLD))
                 self.list.setItem(row, col, item)
         self.list.blockSignals(False)
-        self.message.setText(f"已记录 {len(self.rows)} 手 · 大底池 ≥20BB · 诈唬标记需主动下注且成牌低于一对 · 全部数据仅保存在本机" if self.rows else "暂无符合条件的牌谱，完成一手对局后会自动保存。")
+        self.message.setText(f"已记录 {len(self.rows)} 手 · 大底池 ≥20BB · 诈唬标记需翻牌后下注时成牌低于一对 · 全部数据仅保存在本机" if self.rows else "暂无符合条件的牌谱，完成一手对局后会自动保存。")
         if self.rows:
             self.list.selectRow(0)
         else:

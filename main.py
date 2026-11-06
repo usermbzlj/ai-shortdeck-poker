@@ -19,6 +19,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 import core
 import bots
+import humans
 import theme
 from app_shell import AppShell
 from table_widget import PokerTableWidget
@@ -55,7 +56,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._build_ui()
         self._load_env_to_ui()
-        self.controller.load_env(core.load_dotenv(ENV_PATH))
+        try:
+            self.controller.load_env(core.load_dotenv(ENV_PATH))
+        except core.UserFacingError as error:
+            self.on_error(str(error))
         self.on_new_match()
         self._update_config_hint(jump=True)
         if history_error:
@@ -69,7 +73,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.eventRaised.connect(self.on_event)
 
     def on_event(self, event):
-        if event["type"] == "hand" and not all(bots.configured(p) or (p.base_url and p.api_key and p.model)
+        if self.controller.privacy_active and event.get("private"):
+            return
+        if event["type"] == "hand" and not all(humans.configured(p) or bots.configured(p) or (p.base_url and p.api_key and p.model)
                                                for p in self.controller.profile.values()):
             return
         self.shell.timeline.add_event(event)
@@ -646,6 +652,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_save_env(self) -> None:
         log.info("[UI] 点击: 保存配置到 .env")
         data = self._collect_env_data()
+        humans.validate_env(data)
         core.save_dotenv(ENV_PATH, data)
         self.controller.load_env(data)
         log.info("[UI] 配置已保存 (%d 项)", len(data))
@@ -677,7 +684,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
     def _update_config_hint(self, jump=False) -> bool:
-        configured = all(bots.configured(p) or (p.base_url.strip() and p.api_key.strip() and p.model.strip())
+        configured = all(humans.configured(p) or bots.configured(p) or (p.base_url.strip() and p.api_key.strip() and p.model.strip())
                          for p in self.controller.profile.values())
         if hasattr(self, "shell"):
             self.shell.set_configured(configured)
@@ -809,6 +816,8 @@ class MainWindow(QtWidgets.QMainWindow):
     # ═══════════════════════════ 日志 / 解说 ═══════════════════════════
 
     def append_log(self, line: str) -> None:
+        if self.controller.privacy_active:
+            return
         self.log.append(self.controller.display_text(line))
 
     def append_commentary(self, line: str) -> None:
@@ -871,6 +880,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_bet.setEnabled(legal.can_bet and not vm.thinking)
         self.btn_raise.setEnabled(legal.can_raise and not vm.thinking)
         self.btn_allin.setEnabled(legal.can_allin and not vm.thinking)
+        if vm.human_player and not vm.human_turn and not self.controller.god_view_override:
+            for btn in (self.btn_fold, self.btn_check, self.btn_call, self.btn_bet, self.btn_raise, self.btn_allin):
+                btn.setEnabled(False)
+        for widget in (self.a1, self.a2, self.b1, self.b2, self.f1, self.f2, self.f3, self.t1, self.r1):
+            widget.setEnabled(not vm.privacy_active)
+        self.btn_lock_cards.setEnabled(not vm.privacy_active)
 
         if legal.can_allin and legal.allin_to_cents is not None:
             self.btn_allin.setText(f"全押 ${core.dollars_from_cents(legal.allin_to_cents)}")

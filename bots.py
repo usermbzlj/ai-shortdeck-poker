@@ -1,4 +1,5 @@
 import random
+from collections import Counter
 
 import core
 
@@ -22,6 +23,25 @@ def configured(profile):
     return profile.base_url == BASE_URL and profile.model in STYLES
 
 
+def made_strength(hole, board):
+    rank = core.best_hand_rank_7(hole + board)
+    counts = Counter(c[0] for c in board)
+    own = [c[0] for c in hole]
+    if rank[0] in (1, 2):
+        paired = rank[1:3] if rank[0] == 2 else rank[1:2]
+        contributes = any(r in paired and counts[r] < 2 for r in own)
+    elif rank[0] in (3, 7):
+        contributes = rank[1] in own and counts[rank[1]] < (3 if rank[0] == 3 else 4)
+    else:
+        contributes = len(board) < 5 or rank > core.best_hand_rank_7(board)
+    strength = .25 + rank[0] * .13
+    if contributes and rank[0] >= 2:
+        strength = max(.8, strength)
+    elif not contributes:
+        strength = min(.42, strength - .12)
+    return strength, contributes and rank[0] >= 2
+
+
 def decide(state, player, style="紧凶", rng=None):
     rng = rng or random.Random()
     legal = state.legal_actions(player)
@@ -34,10 +54,11 @@ def decide(state, player, style="紧凶", rng=None):
     ranks = [c[0] for c in hole]
     strength = sum(ranks) / 32 + (.25 if ranks[0] == ranks[1] else 0)
     strength += .12 if hole[0][1] == hole[1][1] else 0
-    board = [c for c in state.board if c]
+    count = {"preflop": 0, "flop": 3, "turn": 4, "river": 5}[state.street]
+    board = [c for c in state.board[:count] if c]
+    own_strong = False
     if len(board) >= 3:
-        rank = core.best_hand_rank_7(hole + board)
-        strength = .25 + rank[0] * .13
+        strength, own_strong = made_strength(hole, board)
     aggression = {"紧凶": .35, "松凶": .62, "跟注站": .10}.get(style, .35)
     passive = "check" if "check" in actions else "call" if "call" in actions else "fold"
     action, target = passive, None
@@ -50,8 +71,12 @@ def decide(state, player, style="紧凶", rng=None):
                                  state.contributed_street[player] + state.to_call_cents(player) +
                                  round((state.pot_cents + state.to_call_cents(player)) * .5)))
     elif passive == "call" and style != "跟注站":
-        price = state.to_call_cents(player) / max(1, state.pot_cents + state.to_call_cents(player))
-        if strength < .60 and rng.random() < price + (.12 if style == "紧凶" else 0):
+        to_call = state.to_call_cents(player)
+        price = to_call / max(1, state.pot_cents + to_call)
+        fold_rate = (.01 if style == "紧凶" else .005) if own_strong and to_call <= state.pot_cents - to_call else (
+            price * (.25 if style == "紧凶" else .08) if own_strong else
+            price + (.12 if style == "紧凶" else 0) if strength < .60 else 0)
+        if rng.random() < fold_rate:
             action = "fold"
     speech = rng.choice(("别急，河牌才见真章。", "这点筹码，还吓不到我。", "有好牌，也要有好故事。")) if rng.random() < .4 else ""
     analysis = {"fold": "赔率不够理想，保存筹码等待更好的机会。",

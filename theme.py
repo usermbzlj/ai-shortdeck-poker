@@ -42,6 +42,8 @@ def paint_font(size, bold=False, mono=False):
 
 
 QSS = """
+QFrame#humanDock { background: #171f2d; border: 1px solid #ac8d3e; border-radius: 12px; }
+QLabel#humanCaption { color: #f5c451; font-weight: 600; }
 QTableWidget { background: #121826; alternate-background-color: #172131; border: 1px solid #29364a; border-radius: 8px; gridline-color: #273447; selection-background-color: #343127; }
 QTableWidget::item { padding: 6px; }
 QHeaderView::section { background: #1a2535; color: #94a3b8; padding: 8px 5px; border: none; }
