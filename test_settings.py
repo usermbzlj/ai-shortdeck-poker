@@ -81,8 +81,8 @@ class SettingsWidgetTests(unittest.TestCase):
     def test_unsaved_form_presets_link_and_first_run(self):
         with patch("core.load_dotenv", return_value={}):
             window = main.MainWindow()
-        self.assertEqual(window.tab_settings, window.tabs.currentWidget())
-        self.assertFalse(window.config_banner.isHidden())
+        self.assertEqual(window.shell.empty, window.shell.stage.currentWidget())
+        self.assertFalse(window.shell.play.isEnabled())
         controls = window.provider_controls["A"]
         controls.provider.setCurrentText("OpenAI")
         self.assertEqual("https://api.openai.com/v1", window.a_base.text())

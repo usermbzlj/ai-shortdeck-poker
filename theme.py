@@ -34,6 +34,27 @@ def paint_font(size, bold=False, mono=False):
 
 
 QSS = """
+QToolBox::tab { background: #121826; color: #94a3b8; border: 1px solid #263144; border-radius: 8px; min-height: 32px; padding: 0; }
+QToolBox::tab:selected { background: #252a32; color: #f5c451; }
+QLabel[player="A"] { color: #60a5fa; }
+QLabel[player="B"] { color: #fb7185; }
+QLabel[player="neutral"] { color: #f5c451; }
+QFrame#appBar { background: #121826; border: 1px solid #263144; border-radius: 16px; }
+QLabel#brandTitle, QLabel#pageTitle { font-size: 23px; font-weight: 600; }
+QLabel#sectionTitle { color: #e6edf7; font-size: 17px; font-weight: 600; padding: 8px 10px; }
+QLabel[role="eventTitle"] { font-weight: 600; }
+QFrame#eventCard { background: #151e2d; border: 1px solid #29364a; border-radius: 12px; }
+QFrame#eventCard[kind="speech"] { background: #20283d; border-color: #3b4661; }
+QFrame#eventCard[kind="commentary"] { background: #29271f; border-color: #665532; }
+QFrame#eventCard[kind="warning"] { background: #33232d; border-color: #69404c; }
+QFrame#eventCard[kind="hand"], QFrame#eventCard[kind="system"] { background: #111823; border-color: #222e40; }
+QFrame#emptyCard { background: #121e2c; border: 1px solid #354458; border-radius: 16px; }
+QPushButton[variant="ghost"]:checked { background: #3a3220; color: #f5c451; border-color: #796033; }
+QSlider::groove:horizontal { background: #263144; height: 5px; border-radius: 2px; }
+QSlider::sub-page:horizontal { background: #f5c451; border-radius: 2px; }
+QSlider::handle:horizontal { background: #ffe49a; width: 14px; margin: -5px 0; border-radius: 7px; }
+QListWidget::item { padding: 10px; border-radius: 8px; }
+QListWidget::item:selected { background: #3a3220; color: #f5c451; }
 QWidget { color: #e6edf7; font-size: 13px; }
 QMainWindow, QDialog { background: #0b0f17; }
 QWidget#workspace, QTabWidget::pane, QScrollArea, QScrollArea > QWidget > QWidget { background: #0b0f17; }

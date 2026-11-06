@@ -229,8 +229,8 @@ class PokerTableWidget(QtWidgets.QWidget):
         vignette.setColorAt(0, _color("#1b2939"))
         vignette.setColorAt(1, _color(theme.BG))
         p.fillRect(self.rect(), vignette)
-        scale = min(self.width() / 1000, self.height() / 720)
-        p.translate((self.width() - 1000 * scale) / 2, (self.height() - 720 * scale) / 2)
+        scale = min(self.width() / 1000, self.height() / 750)
+        p.translate((self.width() - 1000 * scale) / 2, (self.height() - 750 * scale) / 2)
         p.scale(scale, scale)
         self._text(p, (28, 15, 240, 28), "短牌竞技场", 20, theme.TEXT, True, QtCore.Qt.AlignmentFlag.AlignLeft)
         self._text(p, (720, 17, 252, 25), "36 张牌  /  无限注德州扑克", 12, theme.SECONDARY,
@@ -264,7 +264,6 @@ class PokerTableWidget(QtWidgets.QWidget):
         p.setPen(QtGui.QPen(_color("#ffffff14"), 1, QtCore.Qt.PenStyle.DashLine))
         p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         p.drawEllipse(felt_rect.adjusted(15, 14, -15, -14))
-        self._text(p, (240, 198, 520, 45), "SHORT DECK 6+", 28, "#ffffff0b", True)
         vm = self.vm
         if not vm:
             self._text(p, (250, 300, 500, 70), "牌桌已就绪", 24, theme.SECONDARY)
@@ -286,7 +285,7 @@ class PokerTableWidget(QtWidgets.QWidget):
         self._text(p, (100, 340, 160, 26), f"第 {vm.hand_id} 手", 15, "#8bb9aa", True)
         self._text(p, (745, 340, 160, 26), "6+ 短牌", 14, "#8bb9aa", True)
         self._draw_equity(p)
-        for pid, y in (("AI_A", 69), ("AI_B", 584)):
+        for pid, y in (("AI_A", 69), ("AI_B", 610)):
             self._seat(p, pid, y)
         if self._old_bets and self._progress < 1:
             for pid, amount in self._old_bets.items():
@@ -308,7 +307,7 @@ class PokerTableWidget(QtWidgets.QWidget):
             self._round(p, (245, 262, 510, 48), "#111c24f5", 12, "#d9b65b", 1.2)
             self._text(p, (260, 264, 480, 25), title, 20, theme.GOLD, True)
             self._text(p, (260, 290, 480, 16), detail, 11, "#c2b493")
-        self._text(p, (30, 687, 940, 20), "上帝视角 · 双方底牌仅对观众可见     /     同花大于葫芦 · A6789 为顺子", 11, theme.MUTED)
+        self._text(p, (30, 718, 940, 20), "上帝视角 · 双方底牌仅对观众可见     /     同花大于葫芦 · A6789 为顺子", 11, theme.MUTED)
 
     def _draw_equity(self, p):
         if not self.vm.show_equity:
@@ -372,7 +371,7 @@ class PokerTableWidget(QtWidgets.QWidget):
             p.drawEllipse(QtCore.QRectF(730, y + 30, 30, 30))
             self._text(p, (730, y + 30, 30, 30), "D", 14, "#34260e", True)
         cards = vm.hole_cards.get(pid, ["", ""])
-        card_y = 165 if top else 492
+        card_y = 165 if top else 506
         for i in range(2):
             card = cards[i] if i < len(cards) else ""
             self._card(p, 426 + i * 76, card_y, 66, 88, card, (pid, i), winner and card in vm.best_five)

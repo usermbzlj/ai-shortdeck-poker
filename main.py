@@ -18,6 +18,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 import core
 import theme
+from app_shell import AppShell
 from table_widget import PokerTableWidget
 from settings_widgets import ModelCombo, TemperatureInput, ProviderControls
 from controller import AppViewModel, GameController, PlayerID
@@ -52,33 +53,17 @@ class MainWindow(QtWidgets.QMainWindow):
     # ═══════════════════════════ UI 构建 ═══════════════════════════
 
     def _build_ui(self) -> None:
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal, self)
-        self.setCentralWidget(splitter)
+        self._build_controls()
+        self.shell = AppShell(self)
+        self.controller.eventRaised.connect(self.shell.timeline.add_event)
 
-        # ── 左侧：对局 + 设置 tabs ──
-        left = QtWidgets.QWidget()
-        left.setObjectName("workspace")
-        left_layout = QtWidgets.QVBoxLayout(left)
-        left_layout.setContentsMargins(8, 8, 8, 8)
-
-        tabs = QtWidgets.QTabWidget()
-        self.tabs = tabs
-        left_layout.addWidget(tabs, 1)
-
-        self.tab_game = QtWidgets.QWidget()
-        self.tab_settings = QtWidgets.QWidget()
-        tabs.addTab(self.tab_game, "对局")
-        tabs.addTab(self.tab_settings, "设置")
-
+    def _build_controls(self) -> None:
+        self.tab_game = QtWidgets.QWidget(self)
+        self.tab_settings = QtWidgets.QWidget(self)
+        self.tab_game.hide()
+        self.tab_settings.hide()
         self._build_game_tab()
         self._build_settings_tab()
-
-        splitter.addWidget(left)
-
-        # ── 右侧：牌桌 + 日志 + 解说 + 历史 ──
-        right = QtWidgets.QWidget()
-        right_layout = QtWidgets.QVBoxLayout(right)
-        right_layout.setContentsMargins(8, 8, 8, 8)
         self.error_bar = QtWidgets.QFrame()
         self.error_bar.setObjectName("notification")
         error_layout = QtWidgets.QVBoxLayout(self.error_bar)
@@ -104,7 +89,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.error_timer.timeout.connect(self.error_bar.hide)
         self.error_details_button.toggled.connect(lambda expanded: self.error_timer.stop() if expanded else self.error_timer.start(8000))
         self.error_bar.hide()
-        right_layout.addWidget(self.error_bar)
 
         self.board_panel = PokerTableWidget()
 
@@ -112,39 +96,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.log.setReadOnly(True)
         self.log.setFont(theme.font(9, mono=True))
 
-        self.commentary = QtWidgets.QTextEdit()
-        self.commentary.setReadOnly(True)
-        self.commentary.setFont(theme.font(10))
-        self.commentary.setPlaceholderText("解说员尚未配置或未开启...")
-
-        self.history = QtWidgets.QListWidget()
-
-        right_split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        right_split.addWidget(self.board_panel)
-        feeds = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        feeds.addWidget(self._make_labeled_group("对局日志", self.log))
-        feeds.addWidget(self._make_labeled_group("解说席", self.commentary))
-        feeds.addWidget(self._make_labeled_group("行动历史", self.history))
-        right_split.addWidget(feeds)
-        right_split.setStretchFactor(0, 4)
-        right_split.setStretchFactor(1, 1)
-        right_split.setSizes([740, 180])
-
-        right_layout.addWidget(right_split, 1)
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([460, 1140])
-
         self.status = QtWidgets.QStatusBar()
         self.setStatusBar(self.status)
-
-    def _make_labeled_group(self, title: str, widget: QtWidgets.QWidget) -> QtWidgets.QGroupBox:
-        box = QtWidgets.QGroupBox(title)
-        layout = QtWidgets.QVBoxLayout(box)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(widget)
-        return box
 
     # ───────────────────── 对局 Tab ─────────────────────
 
@@ -162,7 +115,7 @@ class MainWindow(QtWidgets.QMainWindow):
         banner_layout = QtWidgets.QVBoxLayout(self.config_banner)
         banner_layout.addWidget(QtWidgets.QLabel("尚未配置 AI 选手，请先在设置页填写并测试连接"))
         jump = QtWidgets.QPushButton("前往设置")
-        jump.clicked.connect(lambda: self.tabs.setCurrentWidget(self.tab_settings))
+        jump.clicked.connect(lambda: self.shell.show_settings())
         banner_layout.addWidget(jump)
         layout.addWidget(self.config_banner)
 
@@ -527,7 +480,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "B": ProviderControls(self, "b", b_form, True),
             "COMMENTATOR": ProviderControls(self, "c", c_form),
         }
-        self.c_same = QtWidgets.QCheckBox("解说员与 AI_A 相同")
+        self.c_same = QtWidgets.QCheckBox("解说员与选手 A 相同")
         c_form.insertRow(0, self.c_same)
         self.c_same.toggled.connect(self._sync_commentator)
         for widget in (self.a_base, self.a_key):
@@ -549,7 +502,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _load_env_to_ui(self) -> None:
         env = core.load_dotenv(ENV_PATH)
-        self.a_name.setText(env.get("A_NAME", "AI_A"))
+        self.a_name.setText(env.get("A_NAME", "选手 A"))
         self.a_base.setText(env.get("A_BASE_URL", ""))
         self.a_key.setText(env.get("A_API_KEY", ""))
         self.a_model.setText(env.get("A_MODEL", ""))
@@ -561,7 +514,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_memory.setChecked(env.get("A_MEMORY_ENABLED", "true").lower() != "false")
         self.a_temp.setText(env.get("A_TEMPERATURE", ""))
 
-        self.b_name.setText(env.get("B_NAME", "AI_B"))
+        self.b_name.setText(env.get("B_NAME", "选手 B"))
         self.b_base.setText(env.get("B_BASE_URL", ""))
         self.b_key.setText(env.get("B_API_KEY", ""))
         self.b_model.setText(env.get("B_MODEL", ""))
@@ -627,7 +580,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _collect_env_data(self) -> dict[str, str]:
         data = {
-            "A_NAME": self.a_name.text().strip() or "AI_A",
+            "A_NAME": self.a_name.text().strip() or "选手 A",
             "A_BASE_URL": self.a_base.text().strip(),
             "A_API_KEY": self.a_key.text().strip(),
             "A_MODEL": self.a_model.text().strip(),
@@ -635,7 +588,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "A_THINKING_BUDGET": str(self.a_thinking_budget.value()),
             "A_MEMORY_ENABLED": "true" if self.a_memory.isChecked() else "false",
             "A_TEMPERATURE": self.a_temp.text().strip(),
-            "B_NAME": self.b_name.text().strip() or "AI_B",
+            "B_NAME": self.b_name.text().strip() or "选手 B",
             "B_BASE_URL": self.b_base.text().strip(),
             "B_API_KEY": self.b_key.text().strip(),
             "B_MODEL": self.b_model.text().strip(),
@@ -700,27 +653,35 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage("连接请求进行中，请稍后关闭窗口", 3000)
             event.ignore()
             return
+        self.shell.save_state()
+        self.controller.set_auto_running(False)
         super().closeEvent(event)
 
     def _update_config_hint(self, jump=False) -> bool:
         configured = all(p.base_url.strip() and p.api_key.strip() and p.model.strip()
                          for p in self.controller.profile.values())
         self.config_banner.setVisible(not configured)
-        if not configured and jump:
-            self.tabs.setCurrentWidget(self.tab_settings)
+        self.config_banner.hide()
+        if hasattr(self, "shell"):
+            self.shell.set_configured(configured)
         return bool(configured)
 
     # ═══════════════════════════ 对局操作 ═══════════════════════════
 
     def on_new_match(self) -> None:
+        if getattr(self, "_match_started", False) and self.vm and all(v > 0 for v in self.vm.stacks_cents.values()):
+            if QtWidgets.QMessageBox.question(self, "开始新比赛", "当前比赛尚未结束，确定重置筹码并开始新比赛？",
+                                             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                                             QtWidgets.QMessageBox.StandardButton.No) != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
         log.info("[UI] 点击: 开始新比赛")
         try:
             start_stack = int(round(self.stack_input.value() * 100))
             sb = int(round(self.sb_input.value() * 100))
             bb = int(round(self.bb_input.value() * 100))
             self.log.clear()
-            self.commentary.clear()
             self.controller.start_new_match(start_stack, sb, bb)
+            self._match_started = True
         except Exception as e:
             log.error("[UI] on_new_match 异常: %s", e)
             self.on_error(str(e))
@@ -831,10 +792,10 @@ class MainWindow(QtWidgets.QMainWindow):
     # ═══════════════════════════ 日志 / 解说 ═══════════════════════════
 
     def append_log(self, line: str) -> None:
-        self.log.append(line)
+        self.log.append(self.controller.display_text(line))
 
     def append_commentary(self, line: str) -> None:
-        self.commentary.append(line)
+        self.append_log(line)
 
     def on_error(self, msg: str) -> None:
         if not msg:
@@ -881,9 +842,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_combo_by_code(self.t1, vm.board_cards[3])
         self._set_combo_by_code(self.r1, vm.board_cards[4])
 
-        self.history.clear()
-        self.history.addItems(vm.history_lines)
-
         legal = vm.legal
         self.lbl_to_call.setText(f"需跟注: ${core.dollars_from_cents(legal.to_call_cents)}")
 
@@ -920,6 +878,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if legal.suggested_to_cents is not None:
             self.to_spin.setValue(legal.suggested_to_cents / 100)
+        if hasattr(self, "shell"):
+            self.shell.update_state(vm)
 
 
 def main() -> None:
