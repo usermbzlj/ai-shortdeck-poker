@@ -152,6 +152,32 @@ class MatchTests(unittest.TestCase):
         with self.assertRaises(core.UserFacingError):
             c.start_duplicate()
 
+    def test_duplicate_reflection_uses_combined_result_not_second_leg_stacks(self):
+        c = self.c
+        c.rules = MatchRules("fixed", 1, duplicate=True)
+        for first_profit in (100, 500):
+            with self.subTest(first_profit=first_profit), patch.object(c, "_fire_reaction_request") as request:
+                c.start_new_match(10000, 50, 100, seed=77)
+                c.execute_action("raise", max(200, first_profit))
+                if first_profit > 100:
+                    c.execute_action("call", None)
+                    c.advance_street()
+                    c.execute_action("check", None)
+                    c.execute_action("bet", 100)
+                c.execute_action("fold", None)
+                c.start_duplicate()
+                request.reset_mock()
+                c.execute_action("raise", 300)
+                c.execute_action("fold", None)
+                self.assertGreater(c.state.stacks["AI_B"], c.state.stacks["AI_A"])
+                self.assertEqual(None if first_profit == 100 else "AI_A", c.match_summary["winner"])
+                ctx = request.call_args_list[0].args[2]
+                self.assertEqual("平局" if first_profit == 100 else "获胜", ctx["result"])
+                self.assertIn("两场合计净收益", ctx["final_stacks"])
+                self.assertIn(core.format_money(first_profit - 100), ctx["final_stacks"])
+                self.assertEqual("2", ctx["total_hands"])
+                self.assertEqual(("1", "1"), (ctx["my_wins"], ctx["opp_wins"]))
+
     def test_stats_and_late_reflections_are_match_scoped(self):
         c = self.c
         c.rules = MatchRules("fixed", 1)

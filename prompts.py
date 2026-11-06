@@ -157,6 +157,7 @@ PLAYER_MATCH_END = """\
 
 对手：{opponent}
 比赛统计：共 {total_hands} 手 | 你赢了 {my_wins} 手，对手赢了 {opp_wins} 手
+比赛结果：你{result}
 最终筹码：{final_stacks}
 最后一手回顾：{last_hand_summary}
 {trash_talk_section}

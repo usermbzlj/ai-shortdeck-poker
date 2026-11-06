@@ -1075,7 +1075,7 @@ class GameController(QtCore.QObject):
         winner = max(combined, key=combined.get) if len(set(combined.values())) > 1 else None
         self.match_summary = dict(winner=winner, names={p: self._display_name(p) for p in s.players},
                                   stacks_cents=dict(s.stacks), net_cents=net,
-                                  combined_cents=combined, hands=self.ledger.hands,
+                                  combined_cents=combined, hands=self.ledger.hands, wins=dict(self._match_stats["wins"]),
                                   biggest_pot_cents=self.ledger.biggest_pot,
                                   stats=stats, reflections={},
                                   seed=s.match_seed, deck_sequence=[[core.card_to_text(c) for c in d] for d in s.deck_sequence],
@@ -1170,8 +1170,15 @@ class GameController(QtCore.QObject):
 
         if is_match_end:
             final_stacks = f"{na}: ${core.dollars_from_cents(s.stacks_cents['AI_A'])} | {nb}: ${core.dollars_from_cents(s.stacks_cents['AI_B'])}"
-            winner = max(s.stacks_cents, key=s.stacks_cents.get)
+            winner = self.match_summary["winner"]
             total = self._match_stats["total_hands"]
+            wins = dict(self._match_stats["wins"])
+            if self._first_leg:
+                total += self._first_leg["hands"]
+                wins = {p: wins[p] + self._first_leg.get("wins", {}).get(p, 0) for p in wins}
+                combined = self.match_summary["combined_cents"]
+                final_stacks = ("第二场 " + final_stacks + "；两场合计净收益：" +
+                                f"{na}: {core.format_money(combined['AI_A'])} | {nb}: {core.format_money(combined['AI_B'])}")
             last_hand = f"底牌 {common['a_hole']} vs {common['b_hole']} | 公共牌 {common['board']} | 行动 {common['action_history']}"
             if common["hand_eval_section"]:
                 last_hand += f" | {common['hand_eval_section']}"
@@ -1182,8 +1189,9 @@ class GameController(QtCore.QObject):
                 ctx = {
                     "player": pname, "opponent": opp_name,
                     "total_hands": str(total),
-                    "my_wins": str(self._match_stats["wins"].get(pid, 0)),
-                    "opp_wins": str(self._match_stats["wins"].get(opp, 0)),
+                    "my_wins": str(wins.get(pid, 0)),
+                    "opp_wins": str(wins.get(opp, 0)),
+                    "result": "平局" if winner is None else "获胜" if winner == pid else "落败",
                     "final_stacks": final_stacks,
                     "last_hand_summary": last_hand,
                     "trash_talk_section": common["trash_talk_section"],
