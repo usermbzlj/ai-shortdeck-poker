@@ -4,6 +4,7 @@ from PySide6 import QtCore, QtWidgets
 
 import core
 from match import FORMATS
+from stats_widgets import StackChart
 
 
 class FormatControls(QtWidgets.QGroupBox):
@@ -130,6 +131,7 @@ class SummaryDialog(QtWidgets.QDialog):
         self.players = QtWidgets.QHBoxLayout()
         root.addLayout(self.players, 1)
         self.columns = {}
+        self.charts = {}
         for pid in ("AI_A", "AI_B"):
             box = QtWidgets.QGroupBox()
             col = QtWidgets.QVBoxLayout(box)
@@ -140,15 +142,19 @@ class SummaryDialog(QtWidgets.QDialog):
             stack.setObjectName("summaryStack")
             stats = QtWidgets.QLabel()
             stats.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            stats.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum)
             reflection = QtWidgets.QTextEdit()
             reflection.setReadOnly(True)
             reflection.setObjectName("summaryReflection")
-            reflection.setMinimumHeight(90)
-            reflection.setMaximumHeight(140)
+            reflection.setFixedHeight(90)
             for widget in (name, stack, stats):
                 col.addWidget(widget)
-            col.addSpacing(18)
-            col.addStretch()
+            curve_title = QtWidgets.QLabel("筹码轨迹")
+            curve_title.setProperty("role", "hint")
+            col.addWidget(curve_title)
+            chart = StackChart(players=(pid,))
+            col.addWidget(chart, 1)
+            self.charts[pid] = chart
             col.addWidget(QtWidgets.QLabel("赛后感言"))
             col.addWidget(reflection)
             self.players.addWidget(box, 1)
@@ -179,12 +185,13 @@ class SummaryDialog(QtWidgets.QDialog):
             name, stack, stats, reflection = widgets
             name.setTextFormat(QtCore.Qt.TextFormat.PlainText)
             name.setText(names[pid])
-            stack.setText("$" + core.dollars_from_cents(data["stacks_cents"][pid]))
+            stack.setText(core.format_money(data["stacks_cents"][pid]))
             s = data["stats"][pid]
             showdown = f'{s["showdown_win"]:.1%}' if s["showdown_count"] else "—"
-            stats.setText(f'VPIP  自愿入池率       {s["vpip"]:.1%}\n\nPFR  翻牌前加注率       {s["pfr"]:.1%}\n\n摊牌胜率                     {showdown}\n\n平均思考                     {s["thinking_seconds"]:.2f}s\n\n非法输出 / 兜底              {s["invalid_outputs"]} / {s["fallbacks"]}')
+            stats.setText(f'VPIP  自愿入池率       {s["vpip"]:.1%}\nPFR  翻牌前加注率       {s["pfr"]:.1%}\n摊牌胜率                     {showdown}\n平均思考                     {s["thinking_seconds"]:.2f}s\n非法输出 / 兜底              {s["invalid_outputs"]} / {s["fallbacks"]}')
+            self.charts[pid].set_points(data.get("chip_curve", []))
             reflection.setPlainText(data["reflections"].get(pid, "等待选手的赛后感言…"))
-        combined = "  ·  ".join(names[p] + " 净收益 $" + core.dollars_from_cents(data["combined_cents"][p]) for p in names)
+        combined = "  ·  ".join(names[p] + " 净收益 " + core.format_money(data["combined_cents"][p]) for p in names)
         self.combined.setText(("两场合计：" if data["duplicate"] else "本场结算：") + combined)
         self.combined.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.duplicate_button.setEnabled(not data["duplicate"])

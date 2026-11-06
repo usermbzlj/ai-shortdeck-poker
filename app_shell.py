@@ -6,6 +6,8 @@ import core
 import theme
 from table_widget import PokerTableWidget
 from match_widgets import FormatControls, SummaryDialog, player_page
+from stats_widgets import StatsPanel
+from review_widgets import HistoryWindow
 
 
 SPEEDS = {"慢": (1800, 7), "标准": (800, 3), "快": (300, 1.5), "极速": (40, 0)}
@@ -471,7 +473,12 @@ class AppShell(QtCore.QObject):
         self.sidebar_tabs = QtWidgets.QTabWidget()
         self.timeline = Timeline()
         self.sidebar_tabs.addTab(self.timeline, "实时动态")
-        self.sidebar_tabs.addTab(w.log, "原始日志")
+        self.stats = StatsPanel(w.controller)
+        self.sidebar_tabs.addTab(self.stats, "数据")
+        self.raw_index = self.sidebar_tabs.addTab(w.log, "原始日志")
+        self.history = None
+        self.stats.openHistory.connect(self.show_history)
+        self.stats.openHand.connect(self.show_history)
         side_layout.addWidget(self.sidebar_tabs)
         self.splitter.addWidget(sidebar)
         self.splitter.setStretchFactor(1, 1)
@@ -537,9 +544,17 @@ class AppShell(QtCore.QObject):
             b.setChecked(b.text() == mode)
         director = mode == "导演"
         self.drawer.setVisible(director)
-        self.sidebar_tabs.setTabVisible(1, director)
+        self.sidebar_tabs.setTabVisible(self.raw_index, director)
         if not director:
             self.sidebar_tabs.setCurrentIndex(0)
+
+    def show_history(self, hand=None):
+        if not self.w.controller.history_store:
+            self.w.on_error("牌谱存储暂不可用，请检查 data 目录权限后重启。")
+            return
+        if self.history is None:
+            self.history = HistoryWindow(self.w.controller.history_store, self.w)
+        self.history.open_history(hand)
 
     def set_speed(self, name):
         if name not in SPEEDS:
@@ -550,6 +565,7 @@ class AppShell(QtCore.QObject):
         self.w.delay_ms.setValue(delay)
         self.w.hand_interval_spin.setValue(interval)
         self.w.controller.skip_action_commentary = name == "极速"
+        self.w.controller.bot_delay_ms = {"慢": 1500, "标准": 1000, "快": 750, "极速": 600}[name]
         self.speed_name = name
 
     def pause(self):
@@ -612,6 +628,7 @@ class AppShell(QtCore.QObject):
         if not getattr(self, "configured", False):
             self.score.setText("等待选手入座 · 配置模型，或先看一场离线演示")
             self.hand.setText("尚未开始")
+            self.w.statusBar().showMessage("配置 AI 选手，或先看一场离线演示 · 所有牌谱仅存于本机")
 
     def add_sizing(self):
         w = self.w

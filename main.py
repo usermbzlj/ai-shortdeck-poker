@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import sqlite3
 
 
 def _reconfigure_stream_utf8(stream: object) -> None:
@@ -21,6 +22,7 @@ import bots
 import theme
 from app_shell import AppShell
 from table_widget import PokerTableWidget
+from history_store import HistoryStore
 from settings_widgets import ModelCombo, TemperatureInput, ProviderControls
 from controller import AppViewModel, GameController, PlayerID
 
@@ -29,12 +31,18 @@ log = logging.getLogger("poker.ui")
 ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self):
+    def __init__(self, history_store=None):
         super().__init__()
         self.setWindowTitle("短牌德州 LLM 对战引擎")
         self.resize(1600, 1000)
 
-        self.controller = GameController()
+        history_error = None
+        if history_store is None:
+            try:
+                history_store = HistoryStore()
+            except (OSError, sqlite3.Error) as error:
+                history_error = str(error)
+        self.controller = GameController(history_store)
         self.controller.viewModelChanged.connect(self.on_vm_changed)
         self.controller.logAppended.connect(self.append_log)
         self.controller.commentaryAppended.connect(self.append_commentary)
@@ -50,6 +58,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.load_env(core.load_dotenv(ENV_PATH))
         self.on_new_match()
         self._update_config_hint(jump=True)
+        if history_error:
+            self.on_error("牌谱存储不可用（对局可继续）：" + history_error)
 
     # ═══════════════════════════ UI 构建 ═══════════════════════════
 

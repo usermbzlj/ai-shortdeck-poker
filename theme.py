@@ -42,6 +42,9 @@ def paint_font(size, bold=False, mono=False):
 
 
 QSS = """
+QTableWidget { background: #121826; alternate-background-color: #172131; border: 1px solid #29364a; border-radius: 8px; gridline-color: #273447; selection-background-color: #343127; }
+QTableWidget::item { padding: 6px; }
+QHeaderView::section { background: #1a2535; color: #94a3b8; padding: 8px 5px; border: none; }
 QListWidget#settingsNav { border: none; background: #101722; }
 QListWidget#settingsNav:focus { border: none; }
 QGroupBox#drawerCard { margin-top: 0; padding: 12px 10px; }

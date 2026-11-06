@@ -1,8 +1,11 @@
 import json
 import logging
 import random
+import sqlite3
 import threading
 import time as _time
+import uuid
+import weakref
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
@@ -10,6 +13,8 @@ from PySide6 import QtCore
 
 import core
 import bots
+import equity
+from history_capture import HandTrace
 from match import MatchRules, MatchLedger, combine_stats
 import prompts
 import providers
@@ -135,6 +140,9 @@ class CommentatorProfile:
 
 
 class GameController(QtCore.QObject):
+    handCompleted = QtCore.Signal(object)
+    matchStarted = QtCore.Signal()
+    _allinResult = QtCore.Signal(str, int, object)
     matchFinished = QtCore.Signal(object)
     summaryChanged = QtCore.Signal(object)
     blindLevelChanged = QtCore.Signal(str)
@@ -144,21 +152,25 @@ class GameController(QtCore.QObject):
     commentaryAppended = QtCore.Signal(str)
     errorRaised = QtCore.Signal(str)
 
-    _llmResult = QtCore.Signal(int, str, str, str)   # req_id, player, content, reasoning
+    _llmResult = QtCore.Signal(int, str, str, str, object)
     _llmError = QtCore.Signal(int, str, str)          # req_id, player, error_msg
-    _commentResult = QtCore.Signal(str)               # commentary text
+    _commentResult = QtCore.Signal(str, int, int, str)
     _commentError = QtCore.Signal(str)
     _reactionResult = QtCore.Signal(int, str, str, str)
 
-    def __init__(self):
+    def __init__(self, history_store=None):
         super().__init__()
         self._llmResult.connect(self._handle_llm_result)
         self._llmError.connect(self._handle_llm_error)
-        self._commentResult.connect(self._handle_comment_result)
+        self._commentResult.connect(lambda mid, hand, frame, text: self._handle_comment_result(text, mid, hand, frame))
         self._commentError.connect(self._handle_comment_error)
         self._reactionResult.connect(lambda generation, player, label, text:
                                      self._handle_reaction_result(player, label, text, generation))
         self._match_generation = 0
+        self.history_store = history_store
+        self._trace = None
+        self._records = {}
+        self._allinResult.connect(self._on_allin_equity)
         self.state = core.HandState("AI_A", "AI_B")
 
         self.profile: dict[PlayerID, LLMProfile] = {"AI_A": LLMProfile(), "AI_B": LLMProfile()}
@@ -178,7 +190,7 @@ class GameController(QtCore.QObject):
         self._first_leg = None
         self._base_blinds = (250, 500)
         self._replay_limit = 0
-        self.bot_delay_ms = 650
+        self.bot_delay_ms = 1000
         self._bot_rng = random.Random()
         self.auto_fill_missing = True
         self.auto_advance_street = True
@@ -237,6 +249,9 @@ class GameController(QtCore.QObject):
                                    hand_id=self.state.hand_id))
 
     def _action_event(self, player, action, amount):
+        if self._trace is not None:
+            self._trace.after_action(self.state, player, action, amount, self._last_analysis, self._last_trash_talk)
+            self._detect_allin()
         self.ledger.action(self.state, player, action)
         text = {"fold": "弃牌", "check": "过牌", "call": "跟注", "bet": "下注", "raise": "加注"}[action]
         self.emit_event("action", text, player, amount)
@@ -379,6 +394,15 @@ class GameController(QtCore.QObject):
         self.state.sb_cents = sb_cents
         self.state.bb_cents = bb_cents
         self.state.new_match(start_stack_cents, seed=seed, deck_sequence=deck_sequence, swap_seats=swap_seats)
+        self.match_id = uuid.uuid4().hex
+        self._records = {}
+        self._metadata = dict(id=self.match_id, created_at=core.now_iso(),
+                              names={p: self._display_name(p) for p in self.state.players},
+                              models={p: self.profile[p].model for p in self.state.players},
+                              initial_stack_cents=start_stack_cents, sb_cents=sb_cents, bb_cents=bb_cents,
+                              swapped=swap_seats, format=self.active_rules.format)
+        self._start_trace()
+        self.matchStarted.emit()
         na = self._display_name("AI_A")
         nb = self._display_name("AI_B")
         self.logAppended.emit("--- \U0001f195 新比赛开始 ---")
@@ -401,6 +425,7 @@ class GameController(QtCore.QObject):
         old_level = self.active_rules.level(self.state.hand_id)
         self.state.sb_cents, self.state.bb_cents = self.active_rules.blinds(*self._base_blinds, next_hand)
         self.state.start_hand()
+        self._start_trace()
         if self.active_rules.level(next_hand) != old_level:
             text = f"盲注升至第 {self.active_rules.level(next_hand) + 1} 级 · 小盲 $" + core.dollars_from_cents(self.state.sb_cents) + " / 大盲 $" + core.dollars_from_cents(self.state.bb_cents)
             self.emit_event("system", text)
@@ -445,6 +470,7 @@ class GameController(QtCore.QObject):
         if not p:
             raise core.UserFacingError("当前无需行动")
         amount = self.state.to_call_cents(p) if action == "call" else to_cents
+        self._trace.before_action(self.state, p, analysis=self._last_analysis, speech=self._last_trash_talk)
         self.state.apply_action(p, action, to_cents)
         self._action_event(p, action, amount)
         if self.state.hand_over and self.state.win_reason == "fold":
@@ -461,6 +487,9 @@ class GameController(QtCore.QObject):
         self._invalidate_requests()
         self.last_error = None
         self.state.advance_street()
+        self._trace.frame(self.state, "进入" + {"flop": "翻牌", "turn": "转牌", "river": "河牌"}[self.state.street],
+                          self._last_analysis, self._last_trash_talk)
+        self._detect_allin()
         street_name = {"preflop": "翻牌前", "flop": "翻牌", "turn": "转牌", "river": "河牌"}[self.state.street]
         self.emit_event("system", f"进入{street_name}")
         self.logAppended.emit(f"=== 进阶到 {street_name} ===")
@@ -631,7 +660,7 @@ class GameController(QtCore.QObject):
             log.debug("AI 响应 content:\n%s", content[:5000])
             if reasoning:
                 log.debug("AI 响应 reasoning:\n%s", reasoning[:5000])
-            self._llmResult.emit(req_id, p, content, reasoning)
+            self._llmResult.emit(req_id, p, content, reasoning, result.get("usage"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -843,7 +872,7 @@ class GameController(QtCore.QObject):
         self.logAppended.emit(f"🛟 兜底动作 [{self._display_name(player)}] {action.upper()}：{error}")
         return core.Decision(action, None, "", "", {"action": action})
 
-    def _handle_llm_result(self, req_id: int, player: str, content: str, reasoning: str) -> None:
+    def _handle_llm_result(self, req_id: int, player: str, content: str, reasoning: str, usage=None) -> None:
         log.debug("_handle_llm_result | req_id=%d | active=%d | player=%s", req_id, self.active_request_id, player)
         if req_id != self.active_request_id:
             log.debug("忽略过期请求 req_id=%d (active=%d)", req_id, self.active_request_id)
@@ -889,6 +918,10 @@ class GameController(QtCore.QObject):
             pot_before = self.state.pot_cents
 
             amount = self.state.to_call_cents(pid) if decision.action == "call" else decision.to_cents
+            elapsed = max(0, _time.monotonic() - self.thinking_started) if self.thinking_started else 0
+            self._trace.before_action(self.state, pid, dict(analysis=decision.analysis, trash_talk=decision.trash_talk,
+                think_seconds=elapsed, tokens={k: v for k, v in (usage if isinstance(usage, dict) else {}).items() if k in ("prompt_tokens", "completion_tokens", "total_tokens") and isinstance(v, (int, float))}),
+                self._last_analysis, self._last_trash_talk)
             if self.thinking_started:
                 self.ledger.times[pid].append(max(0, _time.monotonic() - self.thinking_started))
             self.state.apply_action(player, decision.action, decision.to_cents)
@@ -935,6 +968,10 @@ class GameController(QtCore.QObject):
     def _update_match_stats(self, winner: str | None) -> None:
         if not self.ledger.finish_hand(self.state):
             return
+        record = self._trace.finish(self.state, self.model_stats, self._last_analysis, self._last_trash_talk)
+        self._records[self.state.hand_id] = record
+        self._save_record(record)
+        self.handCompleted.emit(record)
         self._match_stats["total_hands"] += 1
         if winner in ("AI_A", "AI_B"):
             self._match_stats["wins"][winner] += 1
@@ -965,8 +1002,15 @@ class GameController(QtCore.QObject):
                                   initial_blinds_cents=dict(sb=self._base_blinds[0], bb=self._base_blinds[1]),
                                   rules=dict(format=self.active_rules.format, hands=self.active_rules.hands,
                                              level_hands=self.active_rules.level_hands, duplicate=self.active_rules.duplicate),
+                                  chip_curve=[dict(hand_no=0, stacks={p: s.start_stack_cents for p in s.players}, record=None)] +
+                                  [dict(hand_no=h["hand_no"], stacks=h["final_stacks"], record=None) for h in self._records.values()],
                                   duplicate=bool(self._first_leg), first_leg=self._first_leg)
         self._trigger_player_reactions(is_match_end=True)
+        if self.history_store:
+            try:
+                self.history_store.finish_match(self.match_id, self.match_summary)
+            except (OSError, sqlite3.Error) as error:
+                self.errorRaised.emit("总结保存失败：" + str(error))
         if not self._duplicate_pending:
             self.matchFinished.emit(self.match_summary)
         self.emit_event("system", "首场结束，准备交换座位复赛" if self._duplicate_pending else "比赛结束 · 赛后总结已生成")
@@ -1092,7 +1136,9 @@ class GameController(QtCore.QObject):
         prof = self.profile[pid]
         if bots.configured(prof):
             self._pending_reactions += 1
-            self._handle_reaction_result(pid, label, "这局的每一次判断都值得复盘，交换座位再来一场！")
+            winner = self.match_summary.get("winner") if self.match_summary else self.state.winner
+            result = "赢" if winner == pid else "平" if winner is None else "输"
+            self._handle_reaction_result(pid, label, bots.reflection(prof.model, result))
             return
         if not prof.base_url or not prof.api_key or not prof.model:
             return
@@ -1129,6 +1175,11 @@ class GameController(QtCore.QObject):
         if self.match_summary is not None and "赛后感言" in label:
             self.match_summary["reflections"][player] = text or "感言暂不可用，仍可查看统计、导出或开始下一场。"
             self.summaryChanged.emit(self.match_summary)
+            if self.history_store:
+                try:
+                    self.history_store.finish_match(self.match_id, self.match_summary)
+                except (OSError, sqlite3.Error) as error:
+                    self.errorRaised.emit("感言保存失败：" + str(error))
         if text:
             self.emit_event("monologue", text, player)
             self.commentaryAppended.emit(f"{label}: \"{text}\"")
@@ -1226,6 +1277,8 @@ class GameController(QtCore.QObject):
 
         log.info("解说员请求 | event=%s | model=%s", event, c.model)
         log.debug("解说员 messages:\n%s", json.dumps(messages, ensure_ascii=False, indent=2)[:5000])
+        match_id, hand_no = self.match_id, self.state.hand_id
+        frame_index = len(self._trace.record["frames"]) - 1
 
         def worker():
             start = _time.monotonic()
@@ -1237,17 +1290,77 @@ class GameController(QtCore.QObject):
                 log.info("解说员响应 | %.2fs | len=%d", _time.monotonic() - start, len(text))
                 log.debug("解说员内容: %s", text[:2000])
                 if text:
-                    self._commentResult.emit(text)
+                    self._commentResult.emit(match_id, hand_no, frame_index, text)
             except Exception as e:
                 log.error("解说员异常 | %.2fs | %s", _time.monotonic() - start, e)
                 self._commentError.emit(str(e))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _handle_comment_result(self, text: str) -> None:
+    def _handle_comment_result(self, text: str, match_id=None, hand_no=None, frame_index=None) -> None:
+        match_id = match_id or self.match_id
+        hand_no = hand_no or self.state.hand_id
+        frame_index = frame_index if frame_index is not None else len(self._trace.record["frames"]) - 1
+        line = dict(text=text, frame=frame_index)
+        if match_id == self.match_id:
+            if hand_no == self.state.hand_id:
+                self._trace.record["commentary"].append(line)
+            if hand_no in self._records:
+                self._records[hand_no]["commentary"].append(line)
+                self._save_record(self._records[hand_no])
+        elif self.history_store:
+            try:
+                record = self.history_store.get_hand(match_id, hand_no)
+                if record:
+                    record["commentary"].append(line)
+                    self.history_store.save_hand(self._metadata, record)
+            except (OSError, sqlite3.Error) as error:
+                self.errorRaised.emit("解说保存失败：" + str(error))
+            return
         self.emit_event("commentary", text)
         self._prev_commentary = text[:200]
         self.commentaryAppended.emit(f"🎙️ {text}")
+
+    def _start_trace(self):
+        self._trace = HandTrace(self.match_id, self.state,
+                                {p: self._display_name(p) for p in self.state.players},
+                                {p: self.profile[p].model for p in self.state.players}, self.model_stats)
+
+    def _save_record(self, record):
+        if self.history_store:
+            try:
+                self.history_store.save_hand(self._metadata, record)
+            except (OSError, sqlite3.Error) as error:
+                self.errorRaised.emit("牌谱保存失败（对局可继续）：" + str(error))
+
+    def _detect_allin(self):
+        captured = self._trace.detect_all_in(self.state) if self._trace else None
+        if not captured:
+            return
+        match_id, hand_no, store = self.match_id, self.state.hand_id, self.history_store
+        owner = weakref.ref(self)
+        def worker():
+            try:
+                a, b, tie = equity.calculate_equity(*equity.card_key(tuple(captured["hole"]["AI_A"]),
+                    tuple(captured["hole"]["AI_B"]), tuple(captured["board"])))
+                result = dict(AI_A=a, AI_B=b, tie=tie)
+                if store:
+                    store.save_equity(match_id, hand_no, result)
+                target = owner()
+                if target:
+                    target._allinResult.emit(match_id, hand_no, result)
+            except (ValueError, OSError, sqlite3.Error, RuntimeError):
+                log.exception("全押胜率暂不可用")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_allin_equity(self, match_id, hand_no, result):
+        if match_id != self.match_id:
+            return
+        if self._trace and self.state.hand_id == hand_no and self._trace.record["all_in"]:
+            self._trace.record["all_in"]["equity"] = result
+        if hand_no in self._records:
+            self._records[hand_no]["all_in"]["equity"] = result
+            self.handCompleted.emit(self._records[hand_no])
 
     def _handle_comment_error(self, err: str) -> None:
         self.emit_event("warning", "解说暂不可用：" + err[:200])

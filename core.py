@@ -82,6 +82,10 @@ def dollars_from_cents(cents: int) -> str:
     return f"{sign}{cents // 100}.{cents % 100:02d}"
 
 
+def format_money(cents: int) -> str:
+    return ("-" if cents < 0 else "") + "$" + dollars_from_cents(abs(cents))
+
+
 def cents_from_dollars_text(text: str) -> int:
     t = (text or "").strip()
     if not t:
@@ -394,7 +398,7 @@ class LLMClient:
                     "LLM 成功 | model=%s | %.2fs | content_len=%d | reasoning_len=%d",
                     self.model, elapsed, len(content), len(reasoning or ""),
                 )
-                return {"content": content, "reasoning_content": reasoning}
+                return {"content": content, "reasoning_content": reasoning, "usage": data.get("usage")}
         log.error("LLM 所有 URL 均失败 | last_status=%s", last_http_status)
         raise UserFacingError(self._http_error(last_http_status or 404, last_http_body or ""))
 

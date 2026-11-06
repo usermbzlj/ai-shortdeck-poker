@@ -110,7 +110,7 @@ class ShellTests(unittest.TestCase):
         self.assertTrue(shell.drawer.isHidden())
         shell.mode.setCurrentText("导演")
         self.assertFalse(shell.drawer.isHidden())
-        self.assertTrue(shell.sidebar_tabs.isTabVisible(1))
+        self.assertTrue(shell.sidebar_tabs.isTabVisible(shell.raw_index))
         shell.dialog.show_settings()
         shell.dialog.nav.setCurrentRow(4)
         self.assertEqual(4, shell.dialog.stack.currentIndex())
