@@ -11,6 +11,7 @@ __pycache__/
 
 # Debug 日志
 log/
+data/
 
 # Local CodeGraph index
 .codegraph/

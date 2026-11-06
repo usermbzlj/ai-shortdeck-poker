@@ -23,6 +23,8 @@ def _mask_key(key: str) -> str:
 def setup_logging(enabled: bool, base_dir: str | None = None) -> None:
     """初始化 debug 日志。enabled=False 时仅保留 WARNING 以上级别。"""
     logger = logging.getLogger("poker")
+    for old_handler in logger.handlers:
+        old_handler.close()
     logger.handlers.clear()
     logger.propagate = False
 
@@ -78,6 +80,10 @@ def dollars_from_cents(cents: int) -> str:
     sign = "-" if cents < 0 else ""
     cents = abs(cents)
     return f"{sign}{cents // 100}.{cents % 100:02d}"
+
+
+def format_money(cents: int) -> str:
+    return ("-" if cents < 0 else "") + "$" + dollars_from_cents(abs(cents))
 
 
 def cents_from_dollars_text(text: str) -> int:
@@ -185,6 +191,14 @@ def best_hand_rank_7(cards7: list[Card]) -> tuple:
     return max(evaluate_5(list(comb)) for comb in combinations(cards7, 5))
 
 
+def best_five_cards(cards: list[Card]) -> list[Card]:
+    if len(cards) < 5:
+        return []
+    if len(set(cards)) != len(cards):
+        raise ValueError("最佳五张牌中存在重复牌")
+    return list(max(combinations(cards, 5), key=lambda hand: evaluate_5(list(hand))))
+
+
 def describe_hand_rank(rank_tuple: tuple) -> str:
     return HAND_RANK_NAMES.get(rank_tuple[0], "未知")
 
@@ -207,7 +221,7 @@ class Decision:
     raw: dict
 
     @staticmethod
-    def from_text(text: str) -> "Decision":
+    def from_text(text: str, allow_nonpositive: bool = False) -> "Decision":
         log.debug("Decision.from_text 原始文本 (%d字):\n%s", len(text), text[:3000])
         obj = parse_first_json_object(text)
         log.debug("Decision 解析出 JSON: %s", json.dumps(obj, ensure_ascii=False)[:2000])
@@ -227,7 +241,7 @@ class Decision:
                 to_cents = cents_from_dollars_text(str(obj.get("to_usd")))
             else:
                 raise UserFacingError("模型返回缺少 to_cents/to_usd（bet/raise 必填）")
-            if to_cents <= 0:
+            if to_cents <= 0 and not allow_nonpositive:
                 raise UserFacingError("模型返回的 to_cents 必须为正整数")
         log.info("Decision 解析结果: action=%s, to_cents=%s, trash_talk=%s", action, to_cents, bool(trash_talk))
         return Decision(action=action, to_cents=to_cents, analysis=analysis, trash_talk=trash_talk, raw=obj)
@@ -290,6 +304,24 @@ def parse_first_json_object(text: str) -> dict:
 
 
 class LLMClient:
+    @staticmethod
+    def _http_error(status: int, detail: str) -> str:
+        lower = detail.lower()
+        if status == 402 or "insufficient balance" in lower or "insufficient_balance" in lower:
+            friendly = "账户余额不足"
+        elif status in (401, 403):
+            friendly = "API Key 无效或无权限"
+        elif status == 404:
+            friendly = "模型或 API 路径不存在，请检查 Model 和 Base URL"
+        elif status == 429:
+            friendly = "触发限流，请稍后重试"
+        elif status >= 500:
+            friendly = "服务端错误，请稍后重试"
+        else:
+            friendly = "API 请求失败"
+        tail = detail.strip().replace("\n", " ")[-120:]
+        return f"{friendly}（HTTP {status}）" + (f"：{tail}" if tail else "")
+
     def __init__(self, base_url: str, api_key: str, model: str, timeout_s: int = 90):
         self.base_url = (base_url or "").strip()
         self.api_key = (api_key or "").strip()
@@ -310,6 +342,7 @@ class LLMClient:
         temperature: float | None = None,
         thinking_enabled: bool = False,
         thinking_budget: int = 8000,
+        thinking_param: bool = True,
     ) -> dict:
         """返回 {"content": str, "reasoning_content": str|None}"""
         if not self.base_url or not self.api_key or not self.model:
@@ -321,9 +354,9 @@ class LLMClient:
         }
         if temperature is not None:
             payload["temperature"] = temperature
-        if thinking_enabled:
+        if thinking_param and thinking_enabled:
             payload["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
-        else:
+        elif thinking_param:
             payload["thinking"] = {"type": "disabled"}
         log.debug(
             "LLM 请求准备 | model=%s | base=%s | key=%s | temp=%s | thinking=%s",
@@ -340,6 +373,9 @@ class LLMClient:
                 log.debug("LLM 尝试 URL: %s", url)
                 try:
                     resp = client.post(url, headers=headers, json=payload)
+                except httpx.TimeoutException as e:
+                    log.debug("LLM 请求超时", exc_info=True)
+                    raise UserFacingError(f"请求超时({self.timeout_s}s)：请检查网络或增大超时时间") from e
                 except httpx.RequestError as e:
                     log.error("LLM 网络错误: %s (%.2fs)", e, _time.monotonic() - t0)
                     raise UserFacingError(f"网络连接失败：{e}") from e
@@ -352,7 +388,7 @@ class LLMClient:
                     continue
                 if resp.status_code >= 400:
                     log.error("LLM HTTP 错误 %d: %s", resp.status_code, resp.text[:2000])
-                    raise UserFacingError(f"API HTTP 错误：{resp.status_code} {resp.text[:1000]}")
+                    raise UserFacingError(self._http_error(resp.status_code, resp.text))
                 data = resp.json()
                 log.debug("LLM 响应体:\n%s", json.dumps(data, ensure_ascii=False, indent=2)[:8000])
                 msg = data["choices"][0]["message"]
@@ -362,9 +398,9 @@ class LLMClient:
                     "LLM 成功 | model=%s | %.2fs | content_len=%d | reasoning_len=%d",
                     self.model, elapsed, len(content), len(reasoning or ""),
                 )
-                return {"content": content, "reasoning_content": reasoning}
+                return {"content": content, "reasoning_content": reasoning, "usage": data.get("usage")}
         log.error("LLM 所有 URL 均失败 | last_status=%s", last_http_status)
-        raise UserFacingError(f"API 路径不可用（最后状态码 {last_http_status}）：请检查 Base URL。{(last_http_body or '')[:200]}")
+        raise UserFacingError(self._http_error(last_http_status or 404, last_http_body or ""))
 
 
 @dataclass
@@ -392,6 +428,10 @@ class HandState:
         self.sb_cents = 250
         self.bb_cents = 500
         self.start_stack_cents = 100000
+        self.match_seed = random.SystemRandom().randrange(2 ** 63)
+        self.deck_sequence = []
+        self.replay_swapped = False
+        self._hand_order = build_short_deck()
 
         self.hand_id = 0
         self.button = player_a
@@ -409,11 +449,17 @@ class HandState:
     def bb_player(self) -> str:
         return self.other(self.button)
 
-    def new_match(self, start_stack_cents: int | None = None) -> None:
+    def new_match(self, start_stack_cents: int | None = None, *, seed=None,
+                  deck_sequence=None, swap_seats=False) -> None:
         if start_stack_cents is not None:
             self.start_stack_cents = start_stack_cents
         self.hand_id = 0
-        self.button = self.players[0]
+        self.match_seed = seed if seed is not None else random.SystemRandom().randrange(2 ** 63)
+        self.deck_sequence = [list(deck) for deck in deck_sequence] if deck_sequence is not None else []
+        if any(len(deck) != 36 or set(deck) != set(build_short_deck()) for deck in self.deck_sequence):
+            raise UserFacingError("复赛牌序必须包含完整且不重复的 36 张牌")
+        self.replay_swapped = swap_seats
+        self.button = self.players[1] if swap_seats else self.players[0]
         self.stacks = {p: self.start_stack_cents for p in self.players}
         log.info("新比赛 | stack=%d | sb=%d | bb=%d", self.start_stack_cents, self.sb_cents, self.bb_cents)
         self.start_hand()
@@ -451,8 +497,11 @@ class HandState:
 
         self._new_hand_structures()
         self.street = "preflop"
-        self.deck = build_short_deck()
-        random.shuffle(self.deck)
+        if self.hand_id > len(self.deck_sequence):
+            deck = build_short_deck()
+            random.Random(f"{self.match_seed}:{self.hand_id}").shuffle(deck)
+            self.deck_sequence.append(deck)
+        self._hand_order = list(self.deck_sequence[self.hand_id - 1])
         self._rebuild_deck()
 
         self.post_blinds()
@@ -482,8 +531,10 @@ class HandState:
         for c in self.board:
             if c is not None:
                 used.add(c)
-        self.deck = [c for c in build_short_deck() if c not in used]
-        random.shuffle(self.deck)
+        self.deck = [c for c in reversed(self._hand_order) if c not in used]
+
+    def _seat_order(self):
+        return self.players[::-1] if self.replay_swapped else self.players
 
     def lock_cards(
         self,
@@ -540,26 +591,31 @@ class HandState:
                 self.board[i] = c
 
         self._validate_no_duplicates()
+        slots = [(i * 2 + j, card) for i, p in enumerate(self._seat_order())
+                 for j, card in enumerate(self.hole[p]) if card is not None]
+        slots += [(4 + i, card) for i, card in enumerate(self.board) if card is not None]
+        for slot, card in slots:
+            position = self._hand_order.index(card)
+            self._hand_order[slot], self._hand_order[position] = card, self._hand_order[slot]
+        if self.hand_id:
+            self.deck_sequence[self.hand_id - 1] = list(self._hand_order)
         self._rebuild_deck()
 
     def ensure_dealt(self, street: Street) -> None:
         log.debug("ensure_dealt | street=%s", street)
         need_board = {"preflop": 0, "flop": 3, "turn": 4, "river": 5}[street]
 
-        for p in self.players:
+        for seat, p in enumerate(self._seat_order()):
             for i in range(2):
                 if self.hole[p][i] is None:
-                    if not self.deck:
-                        raise UserFacingError("牌库已空，无法发牌")
-                    self.hole[p][i] = self.deck.pop()
+                    self.hole[p][i] = self._hand_order[seat * 2 + i]
 
         for i in range(need_board):
             if self.board[i] is None:
-                if not self.deck:
-                    raise UserFacingError("牌库已空，无法发牌")
-                self.board[i] = self.deck.pop()
+                self.board[i] = self._hand_order[4 + i]
 
         self._validate_no_duplicates()
+        self._rebuild_deck()
 
     def _post(self, p: str, amount: int) -> None:
         pay = min(amount, self.stacks[p])
@@ -580,7 +636,7 @@ class HandState:
 
         self.next_to_act = sb
         self.action_history.append(
-            f"Preflop: {sb} posts SB ${dollars_from_cents(self.sb_cents)}, {bb} posts BB ${dollars_from_cents(self.bb_cents)}."
+            f"翻牌前：{sb} 下小盲 ${dollars_from_cents(self.sb_cents)}，{bb} 下大盲 ${dollars_from_cents(self.bb_cents)}"
         )
 
     def to_call_cents(self, p: str) -> int:
@@ -661,7 +717,9 @@ class HandState:
             raise UserFacingError(f"非法动作：{act}。允许的动作：{legal['actions']}")
 
         opp = self.other(p)
-        history_str = f"[{self.street.capitalize()}] {p} {act}s"
+        street_cn = {"preflop": "翻牌前", "flop": "翻牌", "turn": "转牌", "river": "河牌"}[self.street]
+        action_cn = {"fold": "弃牌", "check": "过牌", "call": "跟注", "bet": "下注", "raise": "加注"}[act]
+        history_str = f"[{street_cn}] {p} {action_cn}"
         self.acted[p] = True
 
         if act == "fold":
@@ -709,7 +767,7 @@ class HandState:
             self._post(p, add)
             self.can_raise[opp] = True
 
-            self.action_history.append(f"{history_str} to ${dollars_from_cents(target)}" + (" (All-in)" if is_all_in else ""))
+            self.action_history.append(f"{history_str} 至 ${dollars_from_cents(target)}" + ("（全押）" if is_all_in else ""))
             self.next_to_act = opp
             if self.stacks[opp] == 0:
                 self.next_to_act = None
@@ -735,7 +793,7 @@ class HandState:
             else:
                 self.can_raise[opp] = (not self.acted[opp])
 
-            self.action_history.append(f"{history_str} to ${dollars_from_cents(target)}" + (" (All-in)" if is_all_in else ""))
+            self.action_history.append(f"{history_str} 至 ${dollars_from_cents(target)}" + ("（全押）" if is_all_in else ""))
             self.next_to_act = opp
             if self.stacks[opp] == 0:
                 self.next_to_act = None
@@ -881,14 +939,22 @@ def load_dotenv(path: str) -> dict[str, str]:
         if not s or s.startswith("#") or "=" not in s:
             continue
         k, v = s.split("=", 1)
-        data[k.strip()] = v.strip().strip('"').strip("'")
+        value = v.strip()
+        if k.strip().endswith('_PERSONA') and value.startswith('"'):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                value = value.strip('"').strip("'")
+        else:
+            value = value.strip('"').strip("'")
+        data[k.strip()] = value
     safe = {k: (_mask_key(v) if "KEY" in k.upper() else v) for k, v in data.items()}
     log.debug("load_dotenv: 加载 %d 项配置: %s", len(data), safe)
     return data
 
 
 def save_dotenv(path: str, data: dict[str, str]) -> None:
-    lines = [f"{k}={data[k]}" for k in sorted(data.keys())]
+    lines = [f"{k}=" + (json.dumps(data[k], ensure_ascii=False) if k.endswith('_PERSONA') else data[k])
+             for k in sorted(data.keys())]
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
-

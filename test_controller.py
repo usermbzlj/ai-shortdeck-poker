@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import core
 from controller import GameController
@@ -47,15 +48,13 @@ class AutoFailureHandlingTests(unittest.TestCase):
         self.assertEqual("quota exceeded", self.errors[0][0])
         self.assertEqual((False, 0, False), self.errors[0][1:])
 
-    def test_invalid_model_output_uses_same_circuit_breaker(self) -> None:
-        self.invalid_result(1)
-        self.invalid_result(2)
-        self.invalid_result(3)
-
-        self.assertFalse(self.controller.auto_running)
-        self.assertEqual(3, self.controller._consecutive_failures)
-        self.assertEqual(1, len(self.errors))
-        self.assertIn("解析出 JSON", self.errors[0][0])
+    def test_invalid_model_output_retries_without_circuit_breaker(self) -> None:
+        with patch("controller._schedule"):
+            self.invalid_result(1)
+        self.assertTrue(self.controller.auto_running)
+        self.assertEqual(0, self.controller._consecutive_failures)
+        self.assertEqual([], self.errors)
+        self.assertEqual(1, self.controller.model_stats["AI_A"]["retries"])
 
     def test_auto_tick_stops_before_reporting_deal_error(self) -> None:
         self.controller.state.ensure_dealt = lambda street: (_ for _ in ()).throw(
