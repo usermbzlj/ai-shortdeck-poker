@@ -61,7 +61,7 @@ class DecisionRecoveryTests(unittest.TestCase):
     def test_exhaustion_falls_back_to_fold(self):
         c = self.controller
         logs = []
-        c.logAppended.connect(logs.append)
+        c.logAppended.connect(lambda s: logs.append(s))
         with patch("controller._schedule"):
             for _ in range(3):
                 self.result("bad JSON")
@@ -91,7 +91,7 @@ class DecisionRecoveryTests(unittest.TestCase):
         self.player = c.state.next_to_act
         c.max_decision_retries = 0
         snapshots = []
-        c.viewModelChanged.connect(snapshots.append)
+        c.viewModelChanged.connect(lambda v: snapshots.append(v))
         self.result("bad")
         self.assertEqual(1, snapshots[-1].model_stats[self.player]["fallbacks"])
         c.model_stats[self.player]["fallbacks"] += 1
