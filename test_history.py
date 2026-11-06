@@ -140,9 +140,15 @@ Short deck: 36 cards, flush beats full house, A6789 is a straight.
                     reached = {"preflop":0, "flop":3, "turn":4, "river":5}[frame["street"]]
                     self.assertFalse(any(frame["board"][reached:]))
                 self.assertEqual(locked[:count], [card for card in frame_vm(hand,-1).board_cards if card])
-                with patch("review_widgets.PokerTableWidget.update_state") as update:
-                    share_image(hand, Path(self.temp.name)/"masked.png")
-                self.assertEqual(locked[:count], [card for card in update.call_args.args[0].board_cards if card])
+                rendered = []
+                def capture_frame(record, index):
+                    vm = frame_vm(record, index)
+                    rendered.append(vm)
+                    return vm
+                with patch("review_widgets.frame_vm", side_effect=capture_frame):
+                    image = share_image(hand, Path(self.temp.name)/"masked.png")
+                self.assertFalse(image.isNull())
+                self.assertEqual(locked[:count], [card for card in rendered[0].board_cards if card])
 
     def test_tags_and_allin_ev_math_and_cached_equity(self):
         hand = self.finished()
