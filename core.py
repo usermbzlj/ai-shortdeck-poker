@@ -209,7 +209,7 @@ class Decision:
     raw: dict
 
     @staticmethod
-    def from_text(text: str) -> "Decision":
+    def from_text(text: str, allow_nonpositive: bool = False) -> "Decision":
         log.debug("Decision.from_text 原始文本 (%d字):\n%s", len(text), text[:3000])
         obj = parse_first_json_object(text)
         log.debug("Decision 解析出 JSON: %s", json.dumps(obj, ensure_ascii=False)[:2000])
@@ -229,7 +229,7 @@ class Decision:
                 to_cents = cents_from_dollars_text(str(obj.get("to_usd")))
             else:
                 raise UserFacingError("模型返回缺少 to_cents/to_usd（bet/raise 必填）")
-            if to_cents <= 0:
+            if to_cents <= 0 and not allow_nonpositive:
                 raise UserFacingError("模型返回的 to_cents 必须为正整数")
         log.info("Decision 解析结果: action=%s, to_cents=%s, trash_talk=%s", action, to_cents, bool(trash_talk))
         return Decision(action=action, to_cents=to_cents, analysis=analysis, trash_talk=trash_talk, raw=obj)
@@ -292,6 +292,24 @@ def parse_first_json_object(text: str) -> dict:
 
 
 class LLMClient:
+    @staticmethod
+    def _http_error(status: int, detail: str) -> str:
+        lower = detail.lower()
+        if status == 402 or "insufficient balance" in lower or "insufficient_balance" in lower:
+            friendly = "账户余额不足"
+        elif status in (401, 403):
+            friendly = "API Key 无效或无权限"
+        elif status == 404:
+            friendly = "模型或 API 路径不存在，请检查 Model 和 Base URL"
+        elif status == 429:
+            friendly = "触发限流，请稍后重试"
+        elif status >= 500:
+            friendly = "服务端错误，请稍后重试"
+        else:
+            friendly = "API 请求失败"
+        tail = detail.strip().replace("\n", " ")[-120:]
+        return f"{friendly}（HTTP {status}）" + (f"：{tail}" if tail else "")
+
     def __init__(self, base_url: str, api_key: str, model: str, timeout_s: int = 90):
         self.base_url = (base_url or "").strip()
         self.api_key = (api_key or "").strip()
@@ -343,6 +361,9 @@ class LLMClient:
                 log.debug("LLM 尝试 URL: %s", url)
                 try:
                     resp = client.post(url, headers=headers, json=payload)
+                except httpx.TimeoutException as e:
+                    log.debug("LLM 请求超时", exc_info=True)
+                    raise UserFacingError(f"请求超时({self.timeout_s}s)：请检查网络或增大超时时间") from e
                 except httpx.RequestError as e:
                     log.error("LLM 网络错误: %s (%.2fs)", e, _time.monotonic() - t0)
                     raise UserFacingError(f"网络连接失败：{e}") from e
@@ -355,7 +376,7 @@ class LLMClient:
                     continue
                 if resp.status_code >= 400:
                     log.error("LLM HTTP 错误 %d: %s", resp.status_code, resp.text[:2000])
-                    raise UserFacingError(f"API HTTP 错误：{resp.status_code} {resp.text[:1000]}")
+                    raise UserFacingError(self._http_error(resp.status_code, resp.text))
                 data = resp.json()
                 log.debug("LLM 响应体:\n%s", json.dumps(data, ensure_ascii=False, indent=2)[:8000])
                 msg = data["choices"][0]["message"]
@@ -367,7 +388,7 @@ class LLMClient:
                 )
                 return {"content": content, "reasoning_content": reasoning}
         log.error("LLM 所有 URL 均失败 | last_status=%s", last_http_status)
-        raise UserFacingError(f"API 路径不可用（最后状态码 {last_http_status}）：请检查 Base URL。{(last_http_body or '')[:200]}")
+        raise UserFacingError(self._http_error(last_http_status or 404, last_http_body or ""))
 
 
 @dataclass

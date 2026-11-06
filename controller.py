@@ -2,7 +2,7 @@ import json
 import logging
 import threading
 import time as _time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from PySide6 import QtCore
@@ -14,6 +14,10 @@ import providers
 log = logging.getLogger("poker.ctrl")
 
 PlayerID = Literal["AI_A", "AI_B"]
+
+
+def _schedule(delay_ms: int, callback) -> None:
+    QtCore.QTimer.singleShot(delay_ms, callback)
 
 
 def _safe_format(template: str, ctx: dict) -> str:
@@ -74,6 +78,7 @@ class AppViewModel:
     auto_state: AutoState
     player_names: dict[PlayerID, str]
     contributed_street_cents: dict[PlayerID, int]
+    model_stats: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -147,6 +152,15 @@ class GameController(QtCore.QObject):
 
         self._consecutive_failures = 0
         self.max_consecutive_failures = 3
+        self.max_decision_retries = 2
+        self.clamp_sizing = True
+        self.ai_timeout_s = None
+        self.commentator_timeout_s = 30
+        self._decision_messages = []
+        self._decision_retries = 0
+        self._network_retries = 0
+        self.model_stats = {p: dict.fromkeys(("decisions", "invalid_outputs", "retries", "fallbacks", "clamps"), 0)
+                            for p in ("AI_A", "AI_B")}
 
         # 喊话记忆（当前手牌）
         self._last_trash_talk: dict[PlayerID, str] = {"AI_A": "", "AI_B": ""}
@@ -179,6 +193,10 @@ class GameController(QtCore.QObject):
             return None
 
     def load_env(self, env: dict[str, str]) -> None:
+        self.max_decision_retries = max(0, int(env.get("MAX_DECISION_RETRIES", "2") or "2"))
+        self.clamp_sizing = env.get("CLAMP_OUT_OF_RANGE", "true").lower() != "false"
+        self.ai_timeout_s = int(env["AI_TIMEOUT_S"]) if env.get("AI_TIMEOUT_S", "").strip() else None
+        self.commentator_timeout_s = int(env.get("COMMENTATOR_TIMEOUT_S", "30") or "30")
         if env.get("COMMENTATOR_SAME_AS_A", "").lower() == "true":
             env = dict(env)
             for suffix in ("BASE_URL", "API_KEY", "MODEL", "PROVIDER"):
@@ -425,12 +443,18 @@ class GameController(QtCore.QObject):
 
     # ─────────────────────────── AI 决策请求 ───────────────────────────
 
-    def request_ai_decision(self) -> None:
+    def request_ai_decision(self, messages: list[dict] | None = None) -> None:
         p = self.state.next_to_act
         if not p:
             return
         if self.thinking:
             return
+        if messages is None:
+            self._decision_retries = 0
+            self._network_retries = 0
+            self.model_stats[p]["decisions"] += 1
+            messages = self._build_llm_messages(p)
+        self._decision_messages = messages
 
         self.request_id += 1
         req_id = self.request_id
@@ -440,8 +464,8 @@ class GameController(QtCore.QObject):
         self._emit_vm()
 
         prof = self.profile[p]
-        client = core.LLMClient(prof.base_url, prof.api_key, prof.model, timeout_s=60)
-        messages = self._build_llm_messages(p)
+        client = core.LLMClient(prof.base_url, prof.api_key, prof.model,
+                                timeout_s=self.ai_timeout_s or (180 if prof.thinking_enabled else 60))
         temperature = prof.temperature
         thinking_enabled = prof.thinking_enabled
         thinking_budget = prof.thinking_budget
@@ -609,7 +633,82 @@ class GameController(QtCore.QObject):
         if req_id != self.active_request_id:
             log.debug("忽略过期请求 req_id=%d (active=%d)", req_id, self.active_request_id)
             return
+        if self.auto_running and self._decision_messages and self._network_retries < 3:
+            delay = 2 ** self._network_retries
+            self._network_retries += 1
+            self.logAppended.emit(f"⚠️ [{self._display_name(player)}] 请求失败，{delay}s 后重试 ({self._network_retries}/3)")
+            self.last_error = err
+            self.thinking = True
+            _schedule(delay * 1000, lambda: self._resume_request(req_id, player, True))
+            self._emit_vm()
+            return
         self._handle_ai_failure(player, err)
+
+    def _resume_request(self, req_id: int, player: str, auto_only=False) -> None:
+        if req_id != self.active_request_id or self.state.next_to_act != player:
+            return
+        self.thinking = False
+        if auto_only and not self.auto_running:
+            self._emit_vm()
+            return
+        self.request_ai_decision(list(self._decision_messages))
+
+    def _validated_decision(self, player: str, content: str):
+        decision = core.Decision.from_text(content, allow_nonpositive=True)
+        original_action = decision.action
+        clamps_before = self.model_stats[player]["clamps"]
+        legal = self.state.legal_actions(player)
+        actions = legal.get("actions", [])
+        action = decision.action
+        if action == "call" and legal.get("to_call_cents", 0) == 0:
+            action = "check"
+        if action == "bet" and "bet" not in actions and "raise" in actions:
+            action = "raise"
+        elif action == "raise" and "raise" not in actions and "bet" in actions:
+            action = "bet"
+        if action not in actions:
+            raise core.UserFacingError(f"你给的 action={action} 不合法")
+        decision = replace(decision, action=action)
+        if action in ("bet", "raise"):
+            maximum = legal["max_to_cents"]
+            minimum = min(legal.get("min_bet_to_cents" if action == "bet" else "min_raise_to_cents") or 1, maximum)
+            amount = decision.to_cents
+            if amount < minimum or amount > maximum:
+                if self.clamp_sizing or self._decision_retries >= self.max_decision_retries:
+                    amount = max(minimum, min(maximum, amount))
+                    self.model_stats[player]["invalid_outputs"] += 1
+                    self.model_stats[player]["clamps"] += 1
+                    self.logAppended.emit(f"⚠️ [{self._display_name(player)}] 越界自动夹值：{decision.to_cents} → {amount}")
+                    decision = replace(decision, to_cents=amount)
+                else:
+                    relation = f"小于最小值 {minimum}" if amount < minimum else f"超出最大值 {maximum}"
+                    raise core.UserFacingError(f"你给的 to_cents={amount} {relation}")
+        if action != original_action:
+            if self.model_stats[player]["clamps"] == clamps_before:
+                self.model_stats[player]["invalid_outputs"] += 1
+            self.logAppended.emit(f"⚠️ [{self._display_name(player)}] 动作修正：{original_action} → {action}")
+        return decision
+
+    def _recover_decision(self, req_id, player, content, error):
+        self.model_stats[player]["invalid_outputs"] += 1
+        legal = self.state.legal_actions(player)
+        if self._decision_retries < self.max_decision_retries:
+            self._decision_retries += 1
+            self.model_stats[player]["retries"] += 1
+            self._network_retries = 0
+            messages = list(self._decision_messages or self._build_llm_messages(player))
+            messages.extend([{"role": "assistant", "content": content},
+                             {"role": "user", "content": f"{error}。合法动作及范围（单位：分）：{json.dumps(legal, ensure_ascii=False)}。请重新输出 JSON。"}])
+            self._decision_messages = messages
+            self.thinking = True
+            self.logAppended.emit(f"⚠️ [{self._display_name(player)}] 输出不合法，要求重答 ({self._decision_retries}/{self.max_decision_retries})")
+            self._emit_vm()
+            _schedule(0, lambda: self._resume_request(req_id, player))
+            return None
+        self.model_stats[player]["fallbacks"] += 1
+        action = "check" if "check" in legal.get("actions", []) else "fold"
+        self.logAppended.emit(f"🛟 兜底动作 [{self._display_name(player)}] {action.upper()}：{error}")
+        return core.Decision(action, None, "", "", {"action": action})
 
     def _handle_llm_result(self, req_id: int, player: str, content: str, reasoning: str) -> None:
         log.debug("_handle_llm_result | req_id=%d | active=%d | player=%s", req_id, self.active_request_id, player)
@@ -625,7 +724,12 @@ class GameController(QtCore.QObject):
                 short = reasoning[:500] + ("..." if len(reasoning) > 500 else "")
                 self.logAppended.emit(f"🧠 [{pname}] 内心思考: {short}")
 
-            decision = core.Decision.from_text(content)
+            try:
+                decision = self._validated_decision(player, content)
+            except (core.UserFacingError, ValueError, TypeError, KeyError) as error:
+                decision = self._recover_decision(req_id, player, content, str(error))
+                if decision is None:
+                    return
             if decision.analysis:
                 self.logAppended.emit(f"\U0001f4a1 [{pname}] 推理: {decision.analysis}")
                 self._last_analysis[pid] = decision.analysis[:200]
@@ -634,32 +738,15 @@ class GameController(QtCore.QObject):
                 self._last_trash_talk[pid] = decision.trash_talk
                 self.logAppended.emit(f"🗣️ [{pname} 喊话]: \"{decision.trash_talk}\"")
 
-            if decision.to_cents is not None:
-                legal = self.state.legal_actions(player)
-                max_to = legal.get("max_to_cents", 0)
-                min_to = legal.get("min_bet_to_cents") or legal.get("min_raise_to_cents") or 1
-                # all-in 可以低于最小加注额（德州扑克规则），封顶 min_to
-                if max_to > 0 and min_to > max_to:
-                    min_to = max_to
-                if max_to > 0 and decision.to_cents > max_to:
-                    raise core.UserFacingError(
-                        f"模型返回的 to_cents={decision.to_cents} 超出最大值 {max_to}"
-                        f"（{core.dollars_from_cents(max_to)} USD）。"
-                        "请检查模型是否把单位误用为[元]而非[分]。"
-                    )
-                if decision.to_cents < min_to:
-                    raise core.UserFacingError(
-                        f"模型返回的 to_cents={decision.to_cents} 小于最小值 {min_to}"
-                        f"（{core.dollars_from_cents(min_to)} USD）。"
-                    )
-
             # 存入记忆（user 消息 + assistant 回复）
             prof = self.profile[pid]
             if prof.memory_enabled:
                 msgs = self._build_llm_messages(pid)
                 last_user = msgs[-1]
                 self._hand_memory[pid].append(last_user)
-                self._hand_memory[pid].append({"role": "assistant", "content": content})
+                applied_reply = json.dumps(dict(decision.raw, action=decision.action,
+                                                to_cents=decision.to_cents), ensure_ascii=False)
+                self._hand_memory[pid].append({"role": "assistant", "content": applied_reply})
 
             # 在 apply_action 之前保存底池快照（fold 会立即清零 pot）
             pot_before = self.state.pot_cents
@@ -696,6 +783,8 @@ class GameController(QtCore.QObject):
             self._handle_ai_failure(player, str(e))
             return
         self._consecutive_failures = 0
+        self._decision_messages = []
+        self.active_request_id = 0
         self._emit_vm()
 
     # ─────────────────────────── 比赛统计 ──────────────────────────
@@ -801,7 +890,8 @@ class GameController(QtCore.QObject):
             return
         self._pending_reactions += 1
         text = _safe_format(template, ctx)
-        client = core.LLMClient(prof.base_url, prof.api_key, prof.model, timeout_s=30)
+        client = core.LLMClient(prof.base_url, prof.api_key, prof.model,
+                                timeout_s=self.ai_timeout_s or (180 if prof.thinking_enabled else 60))
         messages = [{"role": "user", "content": text}]
         temp = prof.temperature
         t_enabled = prof.thinking_enabled
@@ -913,7 +1003,7 @@ class GameController(QtCore.QObject):
         system = _safe_format(prompts.COMMENTATOR_SYSTEM, ctx)
         user_msg = _safe_format(prompts.COMMENTATOR_USER, ctx)
 
-        client = core.LLMClient(c.base_url, c.api_key, c.model, timeout_s=30)
+        client = core.LLMClient(c.base_url, c.api_key, c.model, timeout_s=self.commentator_timeout_s)
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user_msg}]
         temp = c.temperature
         t_enabled = c.thinking_enabled
@@ -1093,5 +1183,6 @@ class GameController(QtCore.QObject):
                 "AI_A": self.state.contributed_street.get("AI_A", 0),
                 "AI_B": self.state.contributed_street.get("AI_B", 0),
             },
+            model_stats={p: dict(stats) for p, stats in self.model_stats.items()},
         )
         self.viewModelChanged.emit(vm)

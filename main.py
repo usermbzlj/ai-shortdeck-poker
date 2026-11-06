@@ -262,6 +262,32 @@ class MainWindow(QtWidgets.QMainWindow):
         right = QtWidgets.QWidget()
         right_layout = QtWidgets.QVBoxLayout(right)
         right_layout.setContentsMargins(8, 8, 8, 8)
+        self.error_bar = QtWidgets.QFrame()
+        self.error_bar.setStyleSheet("QFrame { background:#fff0ed; color:#9b2525; border-radius:5px; }")
+        error_layout = QtWidgets.QVBoxLayout(self.error_bar)
+        error_row = QtWidgets.QHBoxLayout()
+        self.error_summary = QtWidgets.QLabel()
+        self.error_summary.setWordWrap(True)
+        self.error_details_button = QtWidgets.QPushButton("详情")
+        self.error_details_button.setCheckable(True)
+        dismiss = QtWidgets.QPushButton("关闭")
+        error_row.addWidget(self.error_summary, 1)
+        error_row.addWidget(self.error_details_button)
+        error_row.addWidget(dismiss)
+        error_layout.addLayout(error_row)
+        self.error_details = QtWidgets.QPlainTextEdit()
+        self.error_details.setReadOnly(True)
+        self.error_details.setMaximumHeight(140)
+        error_layout.addWidget(self.error_details)
+        self.error_details.hide()
+        self.error_details_button.toggled.connect(self.error_details.setVisible)
+        dismiss.clicked.connect(self.error_bar.hide)
+        self.error_timer = QtCore.QTimer(self)
+        self.error_timer.setSingleShot(True)
+        self.error_timer.timeout.connect(self.error_bar.hide)
+        self.error_details_button.toggled.connect(lambda expanded: self.error_timer.stop() if expanded else self.error_timer.start(8000))
+        self.error_bar.hide()
+        right_layout.addWidget(self.error_bar)
 
         self.board_panel = BoardPanel()
 
@@ -659,6 +685,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.temp.setDecimals(2)
         self.temp.setValue(0.2)
         temp_form.addRow("Temperature", self.temp)
+        self.ai_timeout = QtWidgets.QSpinBox()
+        self.ai_timeout.setRange(0, 3600)
+        self.ai_timeout.setSpecialValueText("自动（普通 60s / 思考 180s）")
+        self.commentator_timeout = QtWidgets.QSpinBox()
+        self.commentator_timeout.setRange(1, 3600)
+        self.commentator_timeout.setValue(30)
+        self.decision_retries = QtWidgets.QSpinBox()
+        self.decision_retries.setRange(0, 10)
+        self.decision_retries.setValue(2)
+        self.clamp_sizing = QtWidgets.QCheckBox("越界自动夹值")
+        self.clamp_sizing.setChecked(True)
+        temp_form.addRow("选手请求超时（秒）", self.ai_timeout)
+        temp_form.addRow("解说请求超时（秒）", self.commentator_timeout)
+        temp_form.addRow("非法输出重答次数", self.decision_retries)
+        temp_form.addRow(self.clamp_sizing)
         self.chk_debug_log = QtWidgets.QCheckBox("开启 Debug 日志（写入 log/ 文件夹）")
         self.chk_debug_log.toggled.connect(lambda enabled: core.setup_logging(enabled, base_dir=os.path.dirname(__file__)))
         self.chk_debug_log.setToolTip("开启后会在 log/ 文件夹中记录所有 API 请求/响应、游戏状态变化等详细信息")
@@ -742,6 +783,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.temp.setValue(0.2)
 
         self.chk_debug_log.setChecked(env.get("DEBUG_LOG_ENABLED", "").strip().lower() == "true")
+        for widget, key, default in ((self.ai_timeout, "AI_TIMEOUT_S", 0),
+                                     (self.commentator_timeout, "COMMENTATOR_TIMEOUT_S", 30),
+                                     (self.decision_retries, "MAX_DECISION_RETRIES", 2)):
+            try:
+                widget.setValue(int(env.get(key, "") or default))
+            except ValueError:
+                widget.setValue(default)
+        self.clamp_sizing.setChecked(env.get("CLAMP_OUT_OF_RANGE", "true").lower() != "false")
         for key, controls in self.provider_controls.items():
             controls.load(env, key)
         self.c_same.setChecked(env.get("COMMENTATOR_SAME_AS_A", "").lower() == "true")
@@ -797,6 +846,10 @@ class MainWindow(QtWidgets.QMainWindow):
         for key, controls in self.provider_controls.items():
             data.update(controls.collect(key))
         data["COMMENTATOR_SAME_AS_A"] = "true" if self.c_same.isChecked() else "false"
+        data["AI_TIMEOUT_S"] = str(self.ai_timeout.value()) if self.ai_timeout.value() else ""
+        data["COMMENTATOR_TIMEOUT_S"] = str(self.commentator_timeout.value())
+        data["MAX_DECISION_RETRIES"] = str(self.decision_retries.value())
+        data["CLAMP_OUT_OF_RANGE"] = "true" if self.clamp_sizing.isChecked() else "false"
         return data
 
     def on_save_env(self) -> None:
@@ -967,8 +1020,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_error(self, msg: str) -> None:
         if not msg:
             return
-        log.warning("[UI] 错误弹窗: %s", msg[:500])
-        QtWidgets.QMessageBox.warning(self, "错误", msg)
+        log.warning("[UI] 错误通知: %s", msg[:500])
+        self.error_summary.setText("⚠️ " + msg.splitlines()[0][:160])
+        self.error_details.setPlainText(msg)
+        self.error_details_button.setChecked(False)
+        self.error_details.hide()
+        self.error_bar.show()
+        self.error_timer.start(8000)
 
     # ═══════════════════════════ ViewModel 刷新 ═══════════════════════════
 
