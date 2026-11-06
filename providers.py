@@ -9,6 +9,7 @@ class Provider:
 
 
 PROVIDERS = {
+    '内置机器人': Provider('builtin://bot', ('紧凶', '松凶', '跟注站'), False),
     'DeepSeek': Provider('https://api.deepseek.com/v1', ('deepseek-chat', 'deepseek-reasoner'), True),
     'OpenAI': Provider('https://api.openai.com/v1', ('gpt-4o', 'gpt-4o-mini', 'gpt-4.1'), False),
     '豆包/Doubao(火山方舟)': Provider('https://ark.cn-beijing.volces.com/api/v3', ('doubao-seed-1-6-250615', 'doubao-1-5-pro-32k-250115'), True),

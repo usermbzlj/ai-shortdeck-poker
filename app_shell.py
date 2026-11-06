@@ -4,6 +4,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 import core
 import theme
+from table_widget import PokerTableWidget
+from match_widgets import FormatControls, SummaryDialog, player_page
 
 
 SPEEDS = {"慢": (1800, 7), "标准": (800, 3), "快": (300, 1.5), "极速": (40, 0)}
@@ -21,7 +23,11 @@ def icon(kind, color=theme.TEXT):
     p.setPen(QtGui.QPen(QtGui.QColor(color), 3, QtCore.Qt.PenStyle.SolidLine,
                        QtCore.Qt.PenCapStyle.RoundCap))
     p.setBrush(QtGui.QColor(color))
-    if kind in ("play", "step", "next"):
+    if kind.startswith("chevron"):
+        p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        points = [(13, 16), (20, 24), (27, 16)] if kind == "chevron_down" else [(16, 13), (24, 20), (16, 27)]
+        p.drawPolyline(QtGui.QPolygonF([QtCore.QPointF(x, y) for x, y in points]))
+    elif kind in ("play", "step", "next"):
         p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(12, 9), QtCore.QPointF(12, 31), QtCore.QPointF(29, 20)]))
         if kind != "play":
             p.drawLine(32, 10, 32, 30)
@@ -71,7 +77,7 @@ def avatar(name, color):
     p.setBrush(QtGui.QColor(theme.ELEVATED))
     p.drawEllipse(3, 3, 66, 66)
     p.setFont(theme.paint_font(29, True))
-    p.drawText(pixmap.rect(), QtCore.Qt.AlignmentFlag.AlignCenter, name[:1])
+    p.drawText(pixmap.rect(), QtCore.Qt.AlignmentFlag.AlignCenter, theme.initials(name))
     p.end()
     pixmap.setDevicePixelRatio(2)
     return pixmap
@@ -164,6 +170,10 @@ class Timeline(QtWidgets.QWidget):
 
         QtCore.QTimer.singleShot(0, self, settle)
 
+    def clear(self):
+        self.events.clear()
+        self.set_filter(self.filter_name)
+
     def _append_card(self, event):
         kind = event["type"]
         card = QtWidgets.QFrame()
@@ -212,7 +222,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.w = w
         self.setWindowTitle("设置 · 短牌竞技场")
         self.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
-        self.resize(980, 800)
+        self.resize(1100, 900)
         root = QtWidgets.QVBoxLayout(self)
         title = QtWidgets.QLabel("偏好与配置")
         title.setObjectName("pageTitle")
@@ -221,6 +231,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self.nav = QtWidgets.QListWidget()
         self.nav.addItems(["选手 A", "选手 B", "解说员", "对局", "外观", "高级"])
         self.nav.setFixedWidth(160)
+        self.nav.setObjectName("settingsNav")
+        self.nav.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.stack = QtWidgets.QStackedWidget()
         row.addWidget(self.nav)
         row.addWidget(self.stack, 1)
@@ -230,7 +242,8 @@ class SettingsDialog(QtWidgets.QDialog):
         a, b, c, advanced = groups
         a.setTitle("选手 A · 模型与风格")
         b.setTitle("选手 B · 模型与风格")
-        pages = [a, b, c]
+        pages = [player_page(w, prefix, group, w.provider_controls[key])
+                 for prefix, group, key in (("a", a, "A"), ("b", b, "B"), ("c", c, "COMMENTATOR"))]
         match = QtWidgets.QGroupBox("对局偏好")
         match_form = QtWidgets.QFormLayout(match)
         appearance = QtWidgets.QGroupBox("牌桌外观")
@@ -243,14 +256,17 @@ class SettingsDialog(QtWidgets.QDialog):
                 form.addRow(label, widget)
             else:
                 form.addRow(widget)
-        pages.extend([match, appearance, advanced])
+        match_page = QtWidgets.QWidget()
+        match_layout = QtWidgets.QVBoxLayout(match_page)
+        match_layout.setContentsMargins(0, 0, 0, 0)
+        self.format_controls = FormatControls()
+        match_layout.addWidget(self.format_controls)
+        match_layout.addWidget(match)
+        pages.extend([match_page, appearance, advanced])
         for group in pages:
             scroll = QtWidgets.QScrollArea()
             scroll.setWidgetResizable(True)
-            host = QtWidgets.QWidget()
-            layout = QtWidgets.QVBoxLayout(host)
-            layout.addWidget(group)
-            layout.addStretch()
+            host = SettingsContent(group)
             scroll.setWidget(host)
             self.stack.addWidget(scroll)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
@@ -282,6 +298,49 @@ class SettingsDialog(QtWidgets.QDialog):
     def show_settings(self):
         self.reload_forms()
         self.open()
+
+
+class SettingsContent(QtWidgets.QWidget):
+    def __init__(self, content):
+        super().__init__()
+        self.content = content
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(24, 8, 24, 20)
+        layout.addWidget(content, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch()
+
+    def resizeEvent(self, event):
+        self.content.setFixedWidth(max(320, min(760, event.size().width() - 48)))
+        super().resizeEvent(event)
+
+
+class Accordion(QtWidgets.QWidget):
+    def __init__(self, groups):
+        super().__init__()
+        self.groups = groups
+        self.headers = []
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        for i, (group, title) in enumerate(zip(groups, ("比赛设置", "指定牌面", "手动操作", "自动选项"))):
+            header = button(title, lambda checked=False, n=i: self.setCurrentIndex(-1 if self.index == n else n), variant="section")
+            header.setCheckable(True)
+            header.setMinimumHeight(42)
+            self.headers.append(header)
+            layout.addWidget(header)
+            group.setTitle("")
+            group.setObjectName("drawerCard")
+            group.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum)
+            layout.addWidget(group)
+        layout.addStretch()
+        self.setCurrentIndex(2)
+
+    def setCurrentIndex(self, index):
+        self.index = index
+        for i, (group, header) in enumerate(zip(self.groups, self.headers)):
+            group.setVisible(i == index)
+            header.setChecked(i == index)
+            header.setIcon(icon("chevron_down" if i == index else "chevron_right", theme.GOLD if i == index else theme.SECONDARY))
 
 
 class AppShell(QtCore.QObject):
@@ -349,29 +408,31 @@ class AppShell(QtCore.QObject):
         self.splitter = QtWidgets.QSplitter()
         self.drawer = w.tab_game
         source = self.drawer.findChild(QtWidgets.QScrollArea).widget()
-        self.director_tools = QtWidgets.QToolBox()
         groups = source.findChildren(QtWidgets.QGroupBox, options=QtCore.Qt.FindChildOption.FindDirectChildrenOnly)
-        for group, title in zip(groups, ("比赛设置", "指定牌面", "手动操作", "自动选项")):
-            page = QtWidgets.QScrollArea()
-            page.setWidgetResizable(True)
-            content = QtWidgets.QWidget()
-            page_layout = QtWidgets.QVBoxLayout(content)
-            page_layout.setContentsMargins(0, 0, 0, 0)
-            page_layout.addWidget(group)
-            page_layout.addStretch()
-            page.setWidget(content)
-            self.director_tools.addItem(page, title)
+        self.director_tools = Accordion(groups)
+        director_scroll = QtWidgets.QScrollArea()
+        director_scroll.setWidgetResizable(True)
+        director_scroll.setWidget(self.director_tools)
         old_scroll = self.drawer.layout().takeAt(0).widget()
         old_scroll.hide()
-        self.drawer.layout().addWidget(self.director_tools)
-        self.director_tools.setCurrentIndex(2)
+        self.drawer.layout().addWidget(director_scroll)
         self.drawer.setMinimumWidth(290)
         self.drawer.setMaximumWidth(400)
         self.splitter.addWidget(self.drawer)
         self.stage = QtWidgets.QStackedWidget()
         self.stage.addWidget(w.board_panel)
         self.empty = QtWidgets.QWidget()
-        empty_layout = QtWidgets.QVBoxLayout(self.empty)
+        empty_stack = QtWidgets.QStackedLayout(self.empty)
+        empty_stack.setStackingMode(QtWidgets.QStackedLayout.StackingMode.StackAll)
+        background = PokerTableWidget()
+        dim = QtWidgets.QGraphicsOpacityEffect(background)
+        dim.setOpacity(.28)
+        background.setGraphicsEffect(dim)
+        empty_stack.addWidget(background)
+        welcome = QtWidgets.QWidget()
+        empty_layout = QtWidgets.QVBoxLayout(welcome)
+        empty_stack.addWidget(welcome)
+        empty_stack.setCurrentWidget(welcome)
         empty_layout.addStretch()
         card = QtWidgets.QFrame()
         card.setObjectName("emptyCard")
@@ -394,6 +455,7 @@ class AppShell(QtCore.QObject):
             card_layout.addWidget(label)
         card_layout.addSpacing(15)
         card_layout.addWidget(button("去配置", self.show_settings, "settings", "primary"))
+        card_layout.addWidget(button("先看一场演示", self.start_demo, "play"))
         empty_layout.addWidget(card, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
         empty_layout.addStretch()
         self.stage.addWidget(self.empty)
@@ -424,6 +486,10 @@ class AppShell(QtCore.QObject):
         w.error_details_button.toggled.connect(lambda: QtCore.QTimer.singleShot(0, self, self.position_toast))
         w.setCentralWidget(host)
         self.dialog = SettingsDialog(w)
+        self.summary = SummaryDialog(w)
+        w.controller.matchFinished.connect(self.summary.present)
+        w.controller.summaryChanged.connect(self.summary.update_summary)
+        w.controller.blindLevelChanged.connect(self.level_notice)
         self.mode.currentTextChanged.connect(self.set_mode)
         self.add_sizing()
         self.add_shortcuts()
@@ -444,6 +510,27 @@ class AppShell(QtCore.QObject):
         self.stage.setCurrentIndex(0 if configured else 1)
         self.play.setEnabled(configured)
         self.step.setEnabled(configured)
+        if self.w.vm is not None:
+            self.update_state(self.w.vm)
+
+    def start_demo(self):
+        self.timeline.clear()
+        self.w.controller.start_demo()
+        self.set_configured(True)
+        self.w.timer.setInterval(self.w.delay_ms.value())
+        self.w.timer.start()
+        self.w.controller.auto_tick()
+
+    def level_notice(self, text):
+        w = self.w
+        w.error_bar.setProperty("tone", "info")
+        w.error_bar.style().unpolish(w.error_bar)
+        w.error_bar.style().polish(w.error_bar)
+        w.error_summary.setText(text)
+        w.error_details.setPlainText(text)
+        w.error_details_button.setChecked(False)
+        w.error_bar.show()
+        w.error_timer.start(8000)
 
     def set_mode(self, mode):
         for b in self.mode_buttons.buttons():
@@ -506,11 +593,13 @@ class AppShell(QtCore.QObject):
         self.score.setText(f'<span style="color:{theme.PLAYER_A}">● {a} · {vm.hands_won.get("AI_A", 0)} 胜</span>'
                            f'   vs   <span style="color:{theme.PLAYER_B}">● {b} · {vm.hands_won.get("AI_B", 0)} 胜</span>'
                            f'   ｜   {"平筹码" if lead == 0 else (a if lead > 0 else b) + " 领先 $" + delta}')
-        self.hand.setText(f"第 {vm.hand_id} 手")
-        self.play.setEnabled(not vm.auto_state.running and getattr(self, "configured", False))
+        count = f"{vm.hand_id}/{vm.total_hands}" if vm.total_hands else str(vm.hand_id)
+        self.hand.setText(f"第 {count} 手  ·  盲注 Lv.{vm.blind_level}")
+        self.hand.setToolTip(vm.blinds_text)
+        self.play.setEnabled(not vm.auto_state.running and not vm.match_finished and getattr(self, "configured", False))
         self.pause_button.setEnabled(vm.auto_state.running or vm.thinking)
-        self.step.setEnabled(not vm.thinking and not vm.auto_state.running and getattr(self, "configured", False))
-        self.next_hand.setEnabled(vm.hand_over and not vm.thinking)
+        self.step.setEnabled(not vm.thinking and not vm.auto_state.running and not vm.match_finished and getattr(self, "configured", False))
+        self.next_hand.setEnabled(vm.hand_over and not vm.match_finished and not vm.thinking)
         legal = vm.legal
         self.sizing_slider.blockSignals(True)
         self.sizing_slider.setRange(round(self.w.to_spin.minimum() * 100), round(self.w.to_spin.maximum() * 100))
@@ -520,6 +609,9 @@ class AppShell(QtCore.QObject):
         self.sizing_slider.setEnabled(enabled)
         for btn in self.sizing_buttons:
             btn.setEnabled(enabled)
+        if not getattr(self, "configured", False):
+            self.score.setText("等待选手入座 · 配置模型，或先看一场离线演示")
+            self.hand.setText("尚未开始")
 
     def add_sizing(self):
         w = self.w
@@ -529,7 +621,7 @@ class AppShell(QtCore.QObject):
         quick.setSpacing(3)
         self.sizing_buttons = []
         for text, ratio in (("1/3 池", 1/3), ("1/2 池", .5), ("2/3 池", 2/3), ("满池", 1), ("2x", 2), ("全押", None)):
-            b = button(text, lambda checked=False, r=ratio: self.size_bet(r), variant="ghost")
+            b = button(text, lambda checked=False, r=ratio: self.size_bet(r), variant="chip")
             quick.addWidget(b, len(self.sizing_buttons) // 3, len(self.sizing_buttons) % 3)
             self.sizing_buttons.append(b)
         layout.addLayout(quick, 4, 0, 1, 3)

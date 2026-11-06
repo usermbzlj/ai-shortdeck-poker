@@ -1,5 +1,6 @@
-from PySide6 import QtGui
+from pathlib import Path
 
+from PySide6 import QtGui
 
 BG = "#0b0f17"
 SURFACE = "#121826"
@@ -19,6 +20,13 @@ FONTS = ["Inter", "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", "sans
 MONO_FONTS = ["JetBrains Mono", "Cascadia Mono", "Consolas", "monospace"]
 
 
+def initials(name, player=""):
+    normalized = name.strip().replace(" ", "")
+    if normalized in ("选手A", "选手B", "AI_A", "AI_B"):
+        return normalized[-1]
+    return name.strip()[:1].upper() or player[-1:] or "?"
+
+
 def font(size=10, weight=QtGui.QFont.Weight.Normal, mono=False):
     result = QtGui.QFont()
     result.setFamilies(MONO_FONTS if mono else FONTS)
@@ -34,6 +42,17 @@ def paint_font(size, bold=False, mono=False):
 
 
 QSS = """
+QListWidget#settingsNav { border: none; background: #101722; }
+QListWidget#settingsNav:focus { border: none; }
+QGroupBox#drawerCard { margin-top: 0; padding: 12px 10px; }
+QPushButton[variant="section"] { text-align: left; background: #162131; color: #b7c7da; border-color: #2b3b50; padding: 10px; }
+QPushButton[variant="section"]:checked { color: #f5c451; border-color: #716037; background: #252a30; }
+QPushButton[variant="chip"] { color: #c2d3e6; background: #213044; border-radius: 16px; padding: 7px 5px; border-color: #3b4c64; }
+QPushButton[variant="chip"]:hover { color: #f5c451; border-color: #f5c451; }
+QFrame#notification[tone="info"] { background: #302a1d; border-color: #91753e; }
+QFrame#notification[tone="info"] QLabel { color: #ffe1a0; }
+QLabel#summaryStack { font-size: 30px; font-weight: 600; color: #f5c451; padding: 12px 0; }
+QTextEdit#summaryReflection { background: transparent; border: none; color: #94a3b8; padding: 0; }
 QToolBox::tab { background: #121826; color: #94a3b8; border: 1px solid #263144; border-radius: 8px; min-height: 32px; padding: 0; }
 QToolBox::tab:selected { background: #252a32; color: #f5c451; }
 QLabel[player="A"] { color: #60a5fa; }
@@ -130,4 +149,5 @@ def apply(app):
                         (QtGui.QPalette.ColorRole.Highlight, GOLD)):
         palette.setColor(role, QtGui.QColor(color))
     app.setPalette(palette)
-    app.setStyleSheet(QSS)
+    arrow = Path(__file__).with_name("chevron.svg").as_posix()
+    app.setStyleSheet(QSS + f'QComboBox::down-arrow {{ image: url("{arrow}"); width: 12px; height: 8px; }}')

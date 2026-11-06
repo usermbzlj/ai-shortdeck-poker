@@ -4,6 +4,7 @@ import httpx
 from PySide6 import QtCore, QtWidgets
 
 import core
+import bots
 from providers import PROVIDERS, PERSONAS, infer_provider, sends_thinking
 
 
@@ -63,6 +64,9 @@ class Probe(QtCore.QThread):
         v = self.values
         try:
             start = time.monotonic()
+            if v["base"] == bots.BASE_URL:
+                self.result.emit(True, list(bots.STYLES) if self.models else "✓ 内置机器人已就绪 · 无需网络或密钥")
+                return
             if self.models:
                 base = v["base"].rstrip("/").removesuffix("/chat/completions")
                 with httpx.Client(timeout=20) as client:
@@ -98,7 +102,7 @@ class ProviderControls(QtCore.QObject):
         self.prefix = prefix
         self.jobs = []
         self.provider = QtWidgets.QComboBox()
-        self.provider.addItems(PROVIDERS)
+        self.provider.addItems([name for name in PROVIDERS if player or name != "内置机器人"])
         self.provider.setCurrentText("自定义")
         form.insertRow(0, "厂商", self.provider)
         self.param = QtWidgets.QComboBox()
@@ -149,6 +153,16 @@ class ProviderControls(QtCore.QObject):
             self.widget("base").setText(preset.base_url)
         else:
             model.setText(previous)
+        self.local_fields()
+
+    def local_fields(self):
+        local = self.provider.currentText() == "内置机器人"
+        self.widget("model").setEditable(not local)
+        self.widget("key").setPlaceholderText("内置机器人无需 API Key" if local else "")
+        for name in ("base", "key", "thinking"):
+            self.widget(name).setEnabled(not local)
+        if local:
+            self.widget("thinking").setChecked(False)
 
     def load(self, env, key):
         name = env.get(key + "_PROVIDER", infer_provider(env.get(key + "_BASE_URL", "")))
@@ -161,6 +175,7 @@ class ProviderControls(QtCore.QObject):
         model.addItems(PROVIDERS[self.provider.currentText()].models)
         model.setText(previous)
         self.param.setCurrentIndex(max(0, self.param.findData(env.get(key + "_THINKING_PARAM", "auto"))))
+        self.local_fields()
         if hasattr(self, "persona"):
             import prompts
             self.persona.setPlainText(env.get(key + "_PERSONA", getattr(prompts, key + "_EXTRA_INSTRUCTIONS")))

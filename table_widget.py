@@ -229,14 +229,10 @@ class PokerTableWidget(QtWidgets.QWidget):
         vignette.setColorAt(0, _color("#1b2939"))
         vignette.setColorAt(1, _color(theme.BG))
         p.fillRect(self.rect(), vignette)
-        scale = min(self.width() / 1000, self.height() / 750)
-        p.translate((self.width() - 1000 * scale) / 2, (self.height() - 750 * scale) / 2)
+        scale = min(self.width() / 1000, self.height() / 715)
+        p.translate((self.width() - 1000 * scale) / 2, (self.height() - 715 * scale) / 2)
         p.scale(scale, scale)
-        self._text(p, (28, 15, 240, 28), "短牌竞技场", 20, theme.TEXT, True, QtCore.Qt.AlignmentFlag.AlignLeft)
-        self._text(p, (720, 17, 252, 25), "36 张牌  /  无限注德州扑克", 12, theme.SECONDARY,
-                   align=QtCore.Qt.AlignmentFlag.AlignRight)
-        p.setPen(QtGui.QPen(_color("#ffffff0c"), 1))
-        p.drawLine(QtCore.QPointF(28, 53), QtCore.QPointF(972, 53))
+        p.translate(0, -35)
         for grow, alpha in ((18, 10), (12, 16), (6, 28)):
             p.setPen(QtCore.Qt.PenStyle.NoPen)
             p.setBrush(_color(0, 0, 0, alpha))
@@ -285,7 +281,8 @@ class PokerTableWidget(QtWidgets.QWidget):
         self._text(p, (100, 340, 160, 26), f"第 {vm.hand_id} 手", 15, "#8bb9aa", True)
         self._text(p, (745, 340, 160, 26), "6+ 短牌", 14, "#8bb9aa", True)
         self._draw_equity(p)
-        for pid, y in (("AI_A", 69), ("AI_B", 610)):
+        seats = ("AI_B", "AI_A") if vm.seats_swapped else ("AI_A", "AI_B")
+        for pid, y in zip(seats, (69, 610)):
             self._seat(p, pid, y)
         if self._old_bets and self._progress < 1:
             for pid, amount in self._old_bets.items():
@@ -329,8 +326,8 @@ class PokerTableWidget(QtWidgets.QWidget):
 
     def _seat(self, p, pid, y):
         vm = self.vm
-        top = pid == "AI_A"
-        color = theme.PLAYER_A if top else theme.PLAYER_B
+        top = y < 300
+        color = theme.PLAYER_A if pid == "AI_A" else theme.PLAYER_B
         winner = vm.hand_over and vm.winner == pid
         loser = vm.hand_over and vm.winner and vm.winner != pid
         active = not vm.hand_over and vm.next_to_act == pid
@@ -353,7 +350,7 @@ class PokerTableWidget(QtWidgets.QWidget):
         p.setBrush(_color("#192a40" if top else "#362533"))
         p.drawEllipse(QtCore.QRectF(302, y + 17, 54, 54))
         name = vm.player_names.get(pid, pid)
-        initials = name[:1].upper() if not name.startswith("AI_") else pid[-1]
+        initials = theme.initials(name, pid)
         self._text(p, (302, y + 17, 54, 54), initials, 24, color, True)
         self._text(p, (370, y + 12, 168, 27), name, 18, theme.TEXT, True,
                    align=QtCore.Qt.AlignmentFlag.AlignLeft)

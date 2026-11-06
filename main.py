@@ -17,6 +17,7 @@ if sys.platform == "win32":
 from PySide6 import QtCore, QtGui, QtWidgets
 
 import core
+import bots
 import theme
 from app_shell import AppShell
 from table_widget import PokerTableWidget
@@ -55,7 +56,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_ui(self) -> None:
         self._build_controls()
         self.shell = AppShell(self)
-        self.controller.eventRaised.connect(self.shell.timeline.add_event)
+        self.controller.eventRaised.connect(self.on_event)
+
+    def on_event(self, event):
+        if event["type"] == "hand" and not all(bots.configured(p) or (p.base_url and p.api_key and p.model)
+                                               for p in self.controller.profile.values()):
+            return
+        self.shell.timeline.add_event(event)
 
     def _build_controls(self) -> None:
         self.tab_game = QtWidgets.QWidget(self)
@@ -562,6 +569,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reduce_motion.setChecked(env.get("REDUCE_MOTION", "false").lower() == "true")
         for key, controls in self.provider_controls.items():
             controls.load(env, key)
+        self.shell.dialog.format_controls.load(env)
         self.c_same.setChecked(env.get("COMMENTATOR_SAME_AS_A", "").lower() == "true")
         self._sync_commentator()
 
@@ -614,6 +622,7 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         for key, controls in self.provider_controls.items():
             data.update(controls.collect(key))
+        data.update(self.shell.dialog.format_controls.collect())
         data["COMMENTATOR_SAME_AS_A"] = "true" if self.c_same.isChecked() else "false"
         data["AI_TIMEOUT_S"] = str(self.ai_timeout.value()) if self.ai_timeout.value() else ""
         data["COMMENTATOR_TIMEOUT_S"] = str(self.commentator_timeout.value())
@@ -658,10 +667,8 @@ class MainWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
     def _update_config_hint(self, jump=False) -> bool:
-        configured = all(p.base_url.strip() and p.api_key.strip() and p.model.strip()
+        configured = all(bots.configured(p) or (p.base_url.strip() and p.api_key.strip() and p.model.strip())
                          for p in self.controller.profile.values())
-        self.config_banner.setVisible(not configured)
-        self.config_banner.hide()
         if hasattr(self, "shell"):
             self.shell.set_configured(configured)
         return bool(configured)
@@ -669,7 +676,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # ═══════════════════════════ 对局操作 ═══════════════════════════
 
     def on_new_match(self) -> None:
-        if getattr(self, "_match_started", False) and self.vm and all(v > 0 for v in self.vm.stacks_cents.values()):
+        if getattr(self, "_match_started", False) and not self.controller.match_finished and self.vm and all(v > 0 for v in self.vm.stacks_cents.values()):
             if QtWidgets.QMessageBox.question(self, "开始新比赛", "当前比赛尚未结束，确定重置筹码并开始新比赛？",
                                              QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
                                              QtWidgets.QMessageBox.StandardButton.No) != QtWidgets.QMessageBox.StandardButton.Yes:
@@ -800,6 +807,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_error(self, msg: str) -> None:
         if not msg:
             return
+        self.error_bar.setProperty("tone", "error")
+        self.error_bar.style().unpolish(self.error_bar)
+        self.error_bar.style().polish(self.error_bar)
         log.warning("[UI] 错误通知: %s", msg[:500])
         self.error_summary.setText("⚠️ " + msg.splitlines()[0][:160])
         self.error_details.setPlainText(msg)

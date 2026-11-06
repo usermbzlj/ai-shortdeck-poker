@@ -424,6 +424,10 @@ class HandState:
         self.sb_cents = 250
         self.bb_cents = 500
         self.start_stack_cents = 100000
+        self.match_seed = random.SystemRandom().randrange(2 ** 63)
+        self.deck_sequence = []
+        self.replay_swapped = False
+        self._hand_order = build_short_deck()
 
         self.hand_id = 0
         self.button = player_a
@@ -441,11 +445,17 @@ class HandState:
     def bb_player(self) -> str:
         return self.other(self.button)
 
-    def new_match(self, start_stack_cents: int | None = None) -> None:
+    def new_match(self, start_stack_cents: int | None = None, *, seed=None,
+                  deck_sequence=None, swap_seats=False) -> None:
         if start_stack_cents is not None:
             self.start_stack_cents = start_stack_cents
         self.hand_id = 0
-        self.button = self.players[0]
+        self.match_seed = seed if seed is not None else random.SystemRandom().randrange(2 ** 63)
+        self.deck_sequence = [list(deck) for deck in deck_sequence] if deck_sequence is not None else []
+        if any(len(deck) != 36 or set(deck) != set(build_short_deck()) for deck in self.deck_sequence):
+            raise UserFacingError("复赛牌序必须包含完整且不重复的 36 张牌")
+        self.replay_swapped = swap_seats
+        self.button = self.players[1] if swap_seats else self.players[0]
         self.stacks = {p: self.start_stack_cents for p in self.players}
         log.info("新比赛 | stack=%d | sb=%d | bb=%d", self.start_stack_cents, self.sb_cents, self.bb_cents)
         self.start_hand()
@@ -483,8 +493,11 @@ class HandState:
 
         self._new_hand_structures()
         self.street = "preflop"
-        self.deck = build_short_deck()
-        random.shuffle(self.deck)
+        if self.hand_id > len(self.deck_sequence):
+            deck = build_short_deck()
+            random.Random(f"{self.match_seed}:{self.hand_id}").shuffle(deck)
+            self.deck_sequence.append(deck)
+        self._hand_order = list(self.deck_sequence[self.hand_id - 1])
         self._rebuild_deck()
 
         self.post_blinds()
@@ -514,8 +527,10 @@ class HandState:
         for c in self.board:
             if c is not None:
                 used.add(c)
-        self.deck = [c for c in build_short_deck() if c not in used]
-        random.shuffle(self.deck)
+        self.deck = [c for c in reversed(self._hand_order) if c not in used]
+
+    def _seat_order(self):
+        return self.players[::-1] if self.replay_swapped else self.players
 
     def lock_cards(
         self,
@@ -572,26 +587,31 @@ class HandState:
                 self.board[i] = c
 
         self._validate_no_duplicates()
+        slots = [(i * 2 + j, card) for i, p in enumerate(self._seat_order())
+                 for j, card in enumerate(self.hole[p]) if card is not None]
+        slots += [(4 + i, card) for i, card in enumerate(self.board) if card is not None]
+        for slot, card in slots:
+            position = self._hand_order.index(card)
+            self._hand_order[slot], self._hand_order[position] = card, self._hand_order[slot]
+        if self.hand_id:
+            self.deck_sequence[self.hand_id - 1] = list(self._hand_order)
         self._rebuild_deck()
 
     def ensure_dealt(self, street: Street) -> None:
         log.debug("ensure_dealt | street=%s", street)
         need_board = {"preflop": 0, "flop": 3, "turn": 4, "river": 5}[street]
 
-        for p in self.players:
+        for seat, p in enumerate(self._seat_order()):
             for i in range(2):
                 if self.hole[p][i] is None:
-                    if not self.deck:
-                        raise UserFacingError("牌库已空，无法发牌")
-                    self.hole[p][i] = self.deck.pop()
+                    self.hole[p][i] = self._hand_order[seat * 2 + i]
 
         for i in range(need_board):
             if self.board[i] is None:
-                if not self.deck:
-                    raise UserFacingError("牌库已空，无法发牌")
-                self.board[i] = self.deck.pop()
+                self.board[i] = self._hand_order[4 + i]
 
         self._validate_no_duplicates()
+        self._rebuild_deck()
 
     def _post(self, p: str, amount: int) -> None:
         pay = min(amount, self.stacks[p])

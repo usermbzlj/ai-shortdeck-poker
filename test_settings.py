@@ -15,7 +15,7 @@ from settings_widgets import Probe, TemperatureInput
 
 class ConfigurationTests(unittest.TestCase):
     def test_presets_and_thinking_modes(self):
-        self.assertEqual(9, len(providers.PROVIDERS))
+        self.assertEqual(10, len(providers.PROVIDERS))
         for name, preset in providers.PROVIDERS.items():
             self.assertEqual(preset.thinking, providers.sends_thinking("auto", name))
             self.assertTrue(providers.sends_thinking("send", name))
