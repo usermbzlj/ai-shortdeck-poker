@@ -88,7 +88,9 @@ class HumanDock(QtWidgets.QFrame):
         self.speech.setEnabled(active)
         for chip in self.chips:
             chip.setEnabled(sizing)
-        key = (vm.hand_id, vm.street, vm.next_to_act, vm.pot_cents, tuple(vm.contributed_street_cents.items()))
+        key = (getattr(self.window.controller, "match_id", None), vm.hand_id, vm.street,
+               vm.next_to_act, vm.pot_cents, tuple(vm.contributed_street_cents.items()),
+               legal.min_bet_to_cents, legal.min_raise_to_cents, legal.max_to_cents)
         if active and key != self.turn_key:
             maximum = legal.max_to_cents
             minimum = min((legal.min_raise_to_cents if legal.can_raise else legal.min_bet_to_cents) or maximum, maximum)

@@ -195,6 +195,28 @@ class StrategyFixTests(unittest.TestCase):
 
 
 class HumanUITests(unittest.TestCase):
+    def test_new_match_after_immediate_fold_refreshes_amount_limits(self):
+        from human_widgets import HumanDock
+        controller = GameController()
+        controller.load_env(human_env())
+        dock = HumanDock(MagicMock(controller=controller))
+        controller.viewModelChanged.connect(dock.update_state)
+        try:
+            controller.start_new_match(10000, 50, 100)
+            self.assertEqual(10000, dock.slider.maximum())
+            dock.amount.setValue(80)
+            controller._emit_vm()
+            self.assertEqual(80, dock.amount.value())
+            controller.execute_human_action("fold")
+            controller.start_new_match(20000, 50, 100)
+            self.assertEqual(20000, dock.slider.maximum())
+            self.assertEqual(200, dock.amount.maximum())
+            self.assertEqual(2, dock.amount.value())
+        finally:
+            dock.deleteLater()
+            controller.deleteLater()
+            APP.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
     def test_challenge_dock_settings_validation_shortcuts_and_privacy_toggle(self):
         with tempfile.TemporaryDirectory() as folder:
             prefs = QtCore.QSettings(str(Path(folder)/"prefs.ini"),QtCore.QSettings.Format.IniFormat)
